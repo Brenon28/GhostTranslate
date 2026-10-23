@@ -4,6 +4,7 @@ from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ..config import (
+    APP_VERSION,
     DEFAULT_HOTKEY_SNIP,
     DEFAULT_HOTKEY_TOGGLE,
     DEFAULT_OCR_BACKEND,
@@ -38,7 +39,7 @@ class FloatingToolbar(QWidget):
 
     def __init__(self, anchor: Optional[Tuple[int, int]] = None):
         super().__init__()
-        self.setWindowTitle("GhostTranslate Toolbar v3.0")
+        self.setWindowTitle(f"GhostTranslate Toolbar v{APP_VERSION}")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -166,7 +167,7 @@ class FloatingToolbar(QWidget):
         rows.addLayout(self.row_main)
         rows.addLayout(self.row_extra)
 
-        title_lbl = QLabel("GhostTranslate v3.0", self.expanded_widget)
+        title_lbl = QLabel(f"GhostTranslate v{APP_VERSION}", self.expanded_widget)
         title_lbl.setStyleSheet("color: #00E5FF; font-weight: 700; font-size: 12px; padding-right: 2px;")
 
         self.btn_fullscreen = QPushButton("Весь экран", self.expanded_widget)
@@ -248,7 +249,7 @@ class FloatingToolbar(QWidget):
         self.btn_region.setToolTip(f"Нажмите {snip_text} или кнопку, затем выделите зону обычной ЛКМ")
         self.btn_clear.setText(f"Скрыть [{toggle_text}]")
         self.btn_clear.setToolTip(f"Скрыть / Показать панель и плашки (глобальная клавиша {toggle_text})")
-        self.collapsed_label.setText(f"GhostTranslate v3.0 · {toggle_text}: Скрыть · {snip_text}: Область")
+        self.collapsed_label.setText(f"GhostTranslate v{APP_VERSION} · {toggle_text}: Скрыть · {snip_text}: Область")
         self.reposition()
 
     def _on_toggle_ocr(self):

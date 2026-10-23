@@ -1,6 +1,6 @@
-; Скрипт Inno Setup для сборки легкого инсталлятора GhostTranslate_v3.0_Setup.exe (~130 МБ)
+; Скрипт Inno Setup: установщик GhostTranslate_v<версия>_Setup.exe (~245 МБ вместе с моделью)
 #define MyAppName "GhostTranslate"
-#define MyAppVersion "3.0"
+#define MyAppVersion "3.1"
 #define MyAppPublisher "GhostTranslate AR Studio"
 #define MyAppExeName "GhostTranslate.exe"
 
@@ -13,7 +13,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=installer_out
-OutputBaseFilename=GhostTranslate_v3.0_Setup
+OutputBaseFilename=GhostTranslate_v{#MyAppVersion}_Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

@@ -1,4 +1,4 @@
-# GhostTranslate 3.0
+# GhostTranslate 3.1
 # Python 3.12, Windows 10/11 x64.
 # The shipped build used numpy 2.5.4 and Qt 6.11.
 

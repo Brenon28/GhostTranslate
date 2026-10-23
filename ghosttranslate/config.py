@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple
 # ==============================================================================
 # КОНСТАНТЫ И КОНФИГУРАЦИЯ (GHOSTTRANSLATE v3.0)
 # ==============================================================================
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 TRANSLATION_ENGINE = "native-ct2:int8-lite"
 DEFAULT_OCR_BACKEND = "WinOCR"
 DEFAULT_RENDER_STYLE = "wrap_gradient"

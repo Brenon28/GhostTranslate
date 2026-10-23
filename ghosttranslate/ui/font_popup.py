@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..config import FONT_FAMILIES
+from ..config import APP_VERSION, FONT_FAMILIES
 from ..hotkeys import parse_hotkey
 from ..settings import FontCustomConfig
 from ..sounds import play_startup_sound
@@ -50,7 +50,7 @@ class FontSettingsPopup(QWidget):
     def __init__(self, font_cfg: FontCustomConfig, parent=None):
         super().__init__(parent)
         self.font_cfg = font_cfg
-        self.setWindowTitle("GhostTranslate v3.0 — Настройка шрифта Aa")
+        self.setWindowTitle(f"GhostTranslate v{APP_VERSION} — Настройка шрифта Aa")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -115,7 +115,7 @@ class FontSettingsPopup(QWidget):
 
         # Заголовок попапа
         hdr = QHBoxLayout()
-        title = QLabel("Aa Шрифт, звук и клавиши (v3.0)", card)
+        title = QLabel(f"Aa Шрифт, звук и клавиши (v{APP_VERSION})", card)
         title.setStyleSheet("color: #00E5FF; font-weight: 700; font-size: 12px;")
         btn_close = QPushButton("✕", card)
         btn_close.setFixedWidth(26)

@@ -1,6 +1,7 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QWidget
 
+from ..config import APP_VERSION
 from ..win32 import apply_color_key, paint_color_key_background
 
 
@@ -12,7 +13,7 @@ class MiniRestorePill(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GhostTranslate Mini Pill v3.0")
+        self.setWindowTitle(f"GhostTranslate Mini Pill v{APP_VERSION}")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint

@@ -16,7 +16,7 @@ try:
 except ImportError:
     HAS_NATIVE_CT2 = False
 
-from .config import BASE_DIR, LRU_MAX_SIZE
+from .config import APP_VERSION, BASE_DIR, LRU_MAX_SIZE
 from .diagnostics import log_event
 from .game_dict import GAME_UI_DICT
 
@@ -146,7 +146,7 @@ class NativeCT2Translator:
 
             # Прогрев модели в ОЗУ
             _ = self.translate_batch(["System Ready"])
-            log_event(f"NativeCT2Translator v3.0 (int8, без PyTorch) загружен из {found_dir}")
+            log_event(f"NativeCT2Translator v{APP_VERSION} (int8, без PyTorch) загружен из {found_dir}")
         except Exception as exc:
             log_event(f"Предупреждение инициализации NativeCT2Translator: {exc}", "WARN")
 

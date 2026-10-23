@@ -14,6 +14,7 @@ from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QPixmap, QScreen
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
 from .config import (
+    APP_VERSION,
     BUNDLE_FILE_PATH,
     DATA_DIR,
     DEFAULT_OCR_BACKEND,
@@ -74,7 +75,7 @@ class GhostTranslateController(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GhostTranslate Controller v3.0")
+        self.setWindowTitle(f"GhostTranslate Controller v{APP_VERSION}")
         self.setWindowFlags(Qt.WindowType.Tool)
 
         # Плашки и область захвата хранятся в логических координатах внутри target_screen.
@@ -174,7 +175,7 @@ class GhostTranslateController(QWidget):
 
         admin_status = "ДА (Оверлей поверх игр активен)" if is_user_admin() else "НЕТ (Рекомендуется запуск от Админа)"
         log_event(
-            f"GhostTranslate v3.0 запущен (Движок={TRANSLATION_ENGINE}, OCR={self.ocr_backend}, "
+            f"GhostTranslate v{APP_VERSION} запущен (Движок={TRANSLATION_ENGINE}, OCR={self.ocr_backend}, "
             f"русский OCR для отсева кириллицы={'да' if HAS_RU_WINOCR else 'нет'}, "
             f"Хоткеи={self.hotkey_toggle.text}/{self.hotkey_snip.text}, Админ={admin_status}, "
             f"Настройки и журнал: {DATA_DIR}, Экраны: {self._describe_screens()})"
@@ -216,7 +217,7 @@ class GhostTranslateController(QWidget):
         toggle, snip = self.hotkey_toggle.text, self.hotkey_snip.text
         self.toolbar.set_hotkey_labels(toggle, snip)
         self.mini_pill.set_hotkey_label(toggle)
-        self.tray.setToolTip(f"GhostTranslate AR v3.0 ({toggle}: Скрыть/Показать · {snip}: Область)")
+        self.tray.setToolTip(f"GhostTranslate AR v{APP_VERSION} ({toggle}: Скрыть/Показать · {snip}: Область)")
         self.tray_act_snip.setText(f"Выделить область ({snip})")
         self.tray_act_toggle.setText(f"Скрыть / Показать ({toggle})")
 
@@ -480,7 +481,7 @@ class GhostTranslateController(QWidget):
 
     def build_diagnostic_report(self) -> str:
         report_lines = [
-            "=== GhostTranslate v3.0 Diagnostic Report ===",
+            f"=== GhostTranslate v{APP_VERSION} Diagnostic Report ===",
             f"OS: {platform.system()} {platform.release()} ({platform.version()}) | Admin={is_user_admin()}",
             f"Screens: {self._describe_screens()}",
             f"Translation Engine: {TRANSLATION_ENGINE} (GAME_UI_DICT={len(GAME_UI_DICT)} words, "
@@ -505,7 +506,7 @@ class GhostTranslateController(QWidget):
     def export_and_copy_logs(self):
         report_text = self.build_diagnostic_report()
         QApplication.clipboard().setText(report_text)
-        log_event("Отчет v3.0 скопирован в буфер обмена")
+        log_event(f"Отчет v{APP_VERSION} скопирован в буфер обмена")
         if self.log_dialog.isVisible():
             self.log_dialog.refresh_view()
 
@@ -971,7 +972,7 @@ class GhostTranslateController(QWidget):
         self._prev_esc_down = esc_down
 
     def emergency_shutdown(self):
-        log_event("Полное завершение работы GhostTranslate v3.0 (Кнопка [X])")
+        log_event(f"Полное завершение работы GhostTranslate v{APP_VERSION} (Кнопка [X])")
         if self.font_cfg.sound_enabled:
             play_shutdown_sound_sync()
         try:

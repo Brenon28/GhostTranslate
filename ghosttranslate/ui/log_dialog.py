@@ -1,6 +1,7 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout
 
+from ..config import APP_VERSION
 from ..diagnostics import BENCHMARK_STATS, LOG_RING_BUFFER, format_benchmark_summary, log_event
 from ..win32 import exclude_from_capture
 
@@ -11,7 +12,7 @@ from ..win32 import exclude_from_capture
 class LogViewerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("GhostTranslate v3.0 — Журнал работы и бенчмарк")
+        self.setWindowTitle(f"GhostTranslate v{APP_VERSION} — Журнал работы и бенчмарк")
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.WindowStaysOnTopHint
@@ -81,7 +82,7 @@ class LogViewerDialog(QDialog):
         self.refresh_view()
 
     def refresh_view(self):
-        self.stats_label.setText(f"Сводка скорости v3.0: {format_benchmark_summary()}")
+        self.stats_label.setText(f"Сводка скорости v{APP_VERSION}: {format_benchmark_summary()}")
         self.text_edit.setPlainText("\n".join(LOG_RING_BUFFER))
         sb = self.text_edit.verticalScrollBar()
         if sb:

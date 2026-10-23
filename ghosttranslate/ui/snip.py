@@ -4,6 +4,8 @@ from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QScreen
 from PyQt6.QtWidgets import QWidget
 
+from ..config import APP_VERSION
+
 
 # ==============================================================================
 # ОКНО ВЫДЕЛЕНИЯ ОБЛАСТИ ПО КЛАВИШЕ F9 (Обычной ЛКМ без зажатия модификаторов)
@@ -27,7 +29,7 @@ class SnipOverlay(QWidget):
     def __init__(self, screen: QScreen):
         super().__init__()
         self.target_screen = screen
-        self.setWindowTitle("GhostTranslate Snip v3.0")
+        self.setWindowTitle(f"GhostTranslate Snip v{APP_VERSION}")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint

@@ -16,6 +16,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
+from ..config import APP_VERSION
 from ..models import OverlayBlock
 from ..settings import FontCustomConfig
 from ..win32 import exclude_from_capture
@@ -130,7 +131,7 @@ class ScreenOverlay(QWidget):
         super().__init__()
         self.controller = controller
         self.target_screen = screen
-        self.setWindowTitle(f"GhostTranslate Overlay v3.0 ({screen.name()})")
+        self.setWindowTitle(f"GhostTranslate Overlay v{APP_VERSION} ({screen.name()})")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint

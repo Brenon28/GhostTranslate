@@ -59,6 +59,15 @@ class PlaqueLayoutTests(unittest.TestCase):
         self.assertEqual(lays["Award"].rect.top(), 860)
         self.assertLessEqual(lays["Reply"].rect.right(), award.rect.left() - PAD_X)
 
+    def test_row_of_menu_buttons_does_not_overlap(self):
+        back = block(35, 288, 45, 22, "Back", "НАЗАД", font_px=21)
+        apply = block(128, 288, 55, 22, "Apply", "ПРИМЕНИТЬ", font_px=21)
+        reset = block(232, 288, 151, 22, "Reset to default", "Перезагрузить по умолчанию", font_px=21)
+        lays = layouts_by_text([reset, apply, back])
+        self.assertLess(lays["Back"].rect.right(), lays["Apply"].rect.left())
+        self.assertLess(lays["Apply"].rect.right(), reset.rect.left())
+        self.assertGreaterEqual(lays["Apply"].font.pixelSize(), MIN_READABLE_FONT_PX)
+
     def test_wider_label_does_not_cover_text_on_the_left(self):
         ago = block(1109, 784, 47, 20, "35m ago", "35 минут назад")
         lay = layouts_by_text([ago])["35m ago"]

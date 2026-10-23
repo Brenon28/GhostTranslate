@@ -8,7 +8,7 @@ import win32gui
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QWidget
 
-from .config import WDA_EXCLUDEFROMCAPTURE
+from .config import WDA_EXCLUDEFROMCAPTURE, WDA_NONE
 from .diagnostics import log_event
 
 
@@ -37,13 +37,20 @@ def is_user_admin() -> bool:
 
 
 _capture_exclusion_warned = False
+_hide_from_capture = True
 
 # Цвет, который Windows делает прозрачным в небольших окнах интерфейса.
 COLOR_KEY = QColor(1, 0, 1)
 COLOR_KEY_REF = 0x00010001
 
 
-def exclude_from_capture(widget: QWidget) -> bool:
+def set_hide_from_capture(enabled: bool) -> None:
+    """False в игровом режиме: окно поверх игры, скрытое от захвата, античиты считают признаком чита."""
+    global _hide_from_capture
+    _hide_from_capture = enabled
+
+
+def apply_capture_affinity(widget: QWidget) -> bool:
     """Прячет окно от снимков экрана, чтобы OCR не читал собственные плашки и панель.
 
     Windows отказывает (ошибка 8) окнам с WA_TranslucentBackground на растровом движке Qt:
@@ -52,11 +59,12 @@ def exclude_from_capture(widget: QWidget) -> bool:
     только с Windows 10 2004; ctypes не бросает исключение, отказ виден лишь по FALSE.
     """
     global _capture_exclusion_warned
+    affinity = WDA_EXCLUDEFROMCAPTURE if _hide_from_capture else WDA_NONE
     try:
-        ok = bool(user32.SetWindowDisplayAffinity(int(widget.winId()), WDA_EXCLUDEFROMCAPTURE))
+        ok = bool(user32.SetWindowDisplayAffinity(int(widget.winId()), affinity))
     except Exception:
         ok = False
-    if not ok and not _capture_exclusion_warned:
+    if not ok and _hide_from_capture and not _capture_exclusion_warned:
         _capture_exclusion_warned = True
         log_event(
             f"WDA_EXCLUDEFROMCAPTURE не применился к окну «{widget.windowTitle()}»: "
@@ -72,7 +80,12 @@ def apply_color_key(widget: QWidget) -> None:
     ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
     win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style | win32con.WS_EX_LAYERED)
     win32gui.SetLayeredWindowAttributes(hwnd, COLOR_KEY_REF, 255, win32con.LWA_COLORKEY)
-    exclude_from_capture(widget)
+    apply_capture_affinity(widget)
+
+
+def native_window_rect(widget: QWidget) -> tuple:
+    """(left, top, right, bottom) окна в физических пикселях: процесс Per-Monitor DPI aware."""
+    return tuple(win32gui.GetWindowRect(int(widget.winId())))
 
 
 def paint_color_key_background(widget: QWidget) -> None:

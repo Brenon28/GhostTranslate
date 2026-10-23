@@ -44,6 +44,7 @@ class HotkeyEdit(QKeySequenceEdit):
 class FontSettingsPopup(QWidget):
     settings_changed = pyqtSignal()
     hotkeys_changed = pyqtSignal()
+    game_mode_changed = pyqtSignal(bool)
     # True, пока поле клавиши ждёт нажатия: глобальные клавиши на это время снимаются.
     hotkey_capture_active = pyqtSignal(bool)
 
@@ -195,6 +196,16 @@ class FontSettingsPopup(QWidget):
         self.chk_border.toggled.connect(self._on_border_toggled)
         layout.addWidget(self.chk_border)
 
+        self.chk_game_mode = QCheckBox("Игровой режим (для игр с античитом)", card)
+        self.chk_game_mode.setToolTip(
+            "Окна GhostTranslate не прячутся от захвата экрана: окно поверх игры, скрытое от захвата, "
+            "античиты считают признаком чита.\nПлашки на миг гаснут перед каждым снимком и видны "
+            "в OBS и на скриншотах. Слежение за плашками каждые 150 мс отключается."
+        )
+        self.chk_game_mode.setChecked(self.font_cfg.game_mode)
+        self.chk_game_mode.toggled.connect(self._on_game_mode_toggled)
+        layout.addWidget(self.chk_game_mode)
+
         # 6. Звук и глобальные клавиши
         line = QFrame(card)
         line.setFrameShape(QFrame.Shape.HLine)
@@ -280,6 +291,11 @@ class FontSettingsPopup(QWidget):
     def _on_border_toggled(self, checked: bool):
         self.font_cfg.show_capture_border = checked
         self._emit_and_save()
+
+    def _on_game_mode_toggled(self, checked: bool):
+        self.font_cfg.game_mode = checked
+        self.font_cfg.save()
+        self.game_mode_changed.emit(checked)
 
     def _on_sound_toggled(self, checked: bool):
         self.font_cfg.sound_enabled = checked

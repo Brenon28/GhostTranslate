@@ -1,6 +1,6 @@
 ; Скрипт Inno Setup: установщик GhostTranslate_v<версия>_Setup.exe (~245 МБ вместе с моделью)
 #define MyAppName "GhostTranslate"
-#define MyAppVersion "3.1"
+#define MyAppVersion "3.2"
 #define MyAppPublisher "GhostTranslate AR Studio"
 #define MyAppExeName "GhostTranslate.exe"
 

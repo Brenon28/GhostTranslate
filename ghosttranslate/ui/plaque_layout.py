@@ -118,10 +118,18 @@ def layout_plaque(
             text_w = QFontMetrics(font).horizontalAdvance(text)
             if text_w <= src_inner_w:
                 break
+        fit_w = right_edge - left_edge - 2 * PAD_X
         if text_w > room_w and can_wrap and len(text.split()) >= 3:
             wrap = True
             wrap_w = room_w
             font = _make_font(font_cfg, base_px)
+        elif text_w > fit_w and not font_cfg.use_fixed_pt:
+            # Кнопка зажата соседями с двух сторон: мельче, но читаемо, вместо наезда на них.
+            for px in range(floor_px - 1, MIN_READABLE_FONT_PX - 1, -1):
+                font = _make_font(font_cfg, px)
+                text_w = QFontMetrics(font).horizontalAdvance(text)
+                if text_w <= fit_w:
+                    break
 
     flags = int(Qt.AlignmentFlag.AlignVCenter)
     if wrap:
@@ -200,15 +208,20 @@ def layout_blocks(
 
     Выросший вниз перевод не закрывает следующий абзац: плашки ниже сдвигаются
     под него, как строки при переносе текста. Плашки одной строки не трогаются.
+    Строка раскладывается слева направо: перевод соседа слева бывает шире его оригинала.
     """
     layouts: List[PlaqueLayout] = []
-    for block in blocks:
+    for block in sorted(blocks, key=lambda b: b.rect.left()):
         if block.is_pending:
             layouts.append(
                 PlaqueLayout(block=block, rect=QRect(block.rect), font=_make_font(font_cfg, 12), flags=0, text="")
             )
             continue
         left_limit, right_limit = _neighbour_limits(block, blocks)
+        for lay in layouts:
+            if lay.block.rect.right() < block.rect.left() and _same_row(lay.block.rect, block.rect):
+                edge = lay.rect.right() + 2
+                left_limit = edge if left_limit is None else max(left_limit, edge)
         layouts.append(layout_plaque(block, font_cfg, style_mode, bounds, right_limit, left_limit))
 
     layouts.sort(key=lambda lay: (lay.block.rect.top(), lay.block.rect.left()))

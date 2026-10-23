@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple
 # ==============================================================================
 # КОНСТАНТЫ И КОНФИГУРАЦИЯ (GHOSTTRANSLATE v3.0)
 # ==============================================================================
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 TRANSLATION_ENGINE = "native-ct2:int8-lite"
 DEFAULT_OCR_BACKEND = "WinOCR"
 DEFAULT_RENDER_STYLE = "wrap_gradient"
@@ -73,7 +73,10 @@ WINOCR_UPSCALE = 1.5
 RAPIDOCR_MAX_SIDE = 1400
 RAPIDOCR_DOWNSCALE = 0.65
 
+WDA_NONE = 0x00000000
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
+# Игровой режим: плашки гаснут перед снимком, DWM показывает пустой оверлей через 1-3 кадра.
+CAPTURE_VEIL_SETTLE_MS = 80
 ENABLE_DIAGNOSTIC_LOGS = True
 
 

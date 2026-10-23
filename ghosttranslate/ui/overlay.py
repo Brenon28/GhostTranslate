@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import QVBoxLayout, QWidget
 from ..config import APP_VERSION
 from ..models import OverlayBlock
 from ..settings import FontCustomConfig
-from ..win32 import exclude_from_capture
+from ..win32 import apply_capture_affinity
 from .plaque_layout import layout_blocks, wrap_lines
 
 if TYPE_CHECKING:
@@ -166,7 +166,7 @@ class ScreenOverlay(QWidget):
             win32con.GWL_EXSTYLE,
             ex_style | win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT,
         )
-        exclude_from_capture(self)
+        apply_capture_affinity(self)
 
 
 class OverlayCanvas(QOpenGLWidget):
@@ -185,7 +185,7 @@ class OverlayCanvas(QOpenGLWidget):
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
         ctrl = self.overlay.controller
-        if ctrl.target_screen is not self.overlay.target_screen:
+        if ctrl.capture_veiled or ctrl.target_screen is not self.overlay.target_screen:
             return
 
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

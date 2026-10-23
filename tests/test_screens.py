@@ -6,7 +6,7 @@ import numpy as np
 from PyQt6.QtCore import QRect
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ghosttranslate.screens import crop_to_region, native_capture_region, screen_native_rect
+from ghosttranslate.screens import crop_to_region, mask_native_rects, native_capture_region, screen_native_rect
 
 
 # Так Qt 6 отдаёт мониторы этой машины при масштабе 150% на основном и 125% на левом:
@@ -58,6 +58,30 @@ class WatchdogCropTests(unittest.TestCase):
         self.assertIsNone(crop_to_region(self.frame, self.frame_region, region))
         region = {"left": -1600, "top": 400, "width": 50, "height": 60}
         self.assertIsNone(crop_to_region(self.frame, self.frame_region, region))
+
+
+class OwnWindowMaskTests(unittest.TestCase):
+    """Игровой режим: панель попадает в снимок и закрашивается ровным цветом."""
+
+    def setUp(self):
+        self.frame_region = {"left": -1920, "top": 140, "width": 400, "height": 300}
+        rng = np.random.default_rng(0)
+        self.frame = rng.integers(0, 256, size=(300, 400, 4), dtype=np.uint8)
+
+    def test_window_area_becomes_flat_and_rest_is_untouched(self):
+        original = self.frame.copy()
+        mask_native_rects(self.frame, self.frame_region, [(-1900, 150, -1850, 190)])
+        patch = self.frame[10:50, 20:70]
+        self.assertTrue((patch == patch[0, 0]).all())
+        self.assertTrue(np.array_equal(self.frame[:, 70:], original[:, 70:]))
+        self.assertTrue(np.array_equal(self.frame[50:], original[50:]))
+
+    def test_window_partly_outside_frame_is_clipped(self):
+        original = self.frame.copy()
+        mask_native_rects(self.frame, self.frame_region, [(-2000, 100, -1910, 145), (0, 0, 50, 50)])
+        self.assertTrue((self.frame[:5, :10] == self.frame[0, 0]).all())
+        self.assertTrue(np.array_equal(self.frame[5:], original[5:]))
+        self.assertTrue(np.array_equal(self.frame[:, 10:], original[:, 10:]))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """Пересчёт логических координат Qt в физические пиксели монитора."""
 
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 import mss
 import numpy as np
@@ -31,6 +31,23 @@ def crop_to_region(frame: np.ndarray, frame_region: Dict[str, int], region: Dict
     if dx < 0 or dy < 0 or dx + region["width"] > w or dy + region["height"] > h:
         return None
     return frame[dy : dy + region["height"], dx : dx + region["width"]]
+
+
+def mask_native_rects(frame: np.ndarray, frame_region: Dict[str, int], rects: Iterable[Tuple[int, int, int, int]]) -> None:
+    """Заливает части кадра под окнами (left, top, right, bottom в пикселях монитора) их средним цветом.
+
+    Ровная заливка не даёт OCR текста, а кадр остаётся сравнимым с предыдущим.
+    """
+    h, w = frame.shape[:2]
+    for left, top, right, bottom in rects:
+        x0 = max(0, left - frame_region["left"])
+        y0 = max(0, top - frame_region["top"])
+        x1 = min(w, right - frame_region["left"])
+        y1 = min(h, bottom - frame_region["top"])
+        if x1 <= x0 or y1 <= y0:
+            continue
+        patch = frame[y0:y1, x0:x1]
+        patch[:] = patch.reshape(-1, patch.shape[2]).mean(axis=0).astype(frame.dtype)
 
 
 def screen_native_rect(geometry: QRect, dpr: float) -> QRect:

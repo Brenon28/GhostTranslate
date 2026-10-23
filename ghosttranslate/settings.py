@@ -21,6 +21,8 @@ class FontCustomConfig:
     text_align: str = "auto"  # "auto" | "center" | "left"
     show_capture_border: bool = True
     sound_enabled: bool = True
+    # Окна не прячутся от захвата экрана, плашки гаснут на время снимка.
+    game_mode: bool = False
     hotkey_toggle: str = DEFAULT_HOTKEY_TOGGLE
     hotkey_snip: str = DEFAULT_HOTKEY_SNIP
     # Середина верхнего края панели в логических координатах Qt; None — по центру основного экрана.
@@ -36,6 +38,7 @@ class FontCustomConfig:
             "text_align": self.text_align,
             "show_capture_border": self.show_capture_border,
             "sound_enabled": self.sound_enabled,
+            "game_mode": self.game_mode,
             "hotkey_toggle": self.hotkey_toggle,
             "hotkey_snip": self.hotkey_snip,
             "toolbar_anchor": list(self.toolbar_anchor) if self.toolbar_anchor else None,
@@ -72,6 +75,7 @@ class FontCustomConfig:
                     text_align=str(data.get("text_align", "auto")),
                     show_capture_border=bool(data.get("show_capture_border", True)),
                     sound_enabled=bool(data.get("sound_enabled", True)),
+                    game_mode=bool(data.get("game_mode", False)),
                     hotkey_toggle=cls._hotkey_or_default(data.get("hotkey_toggle"), DEFAULT_HOTKEY_TOGGLE),
                     hotkey_snip=cls._hotkey_or_default(data.get("hotkey_snip"), DEFAULT_HOTKEY_SNIP),
                     toolbar_anchor=cls._anchor_or_none(data.get("toolbar_anchor")),

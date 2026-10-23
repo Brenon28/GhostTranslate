@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushB
 
 from ..config import APP_VERSION
 from ..diagnostics import BENCHMARK_STATS, LOG_RING_BUFFER, format_benchmark_summary, log_event
-from ..win32 import exclude_from_capture
+from ..win32 import apply_capture_affinity
 
 
 # ==============================================================================
@@ -78,7 +78,7 @@ class LogViewerDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
-        exclude_from_capture(self)
+        apply_capture_affinity(self)
         self.refresh_view()
 
     def refresh_view(self):

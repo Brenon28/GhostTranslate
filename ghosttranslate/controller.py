@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 from .config import (
     APP_VERSION,
     BUNDLE_FILE_PATH,
+    CAPTURE_VEIL_SETTLE_MS,
     DATA_DIR,
     DEFAULT_OCR_BACKEND,
     DEFAULT_RENDER_STYLE,
@@ -37,7 +38,14 @@ from .game_dict import GAME_UI_DICT
 from .hotkeys import MOD_NOREPEAT, Hotkey, is_hotkey_down, parse_hotkey
 from .models import OverlayBlock
 from .ocr.imaging import compute_small_gray_numpy
-from .screens import crop_to_region, native_capture_region, open_mss, screen_at_native_point, screen_native_rect
+from .screens import (
+    crop_to_region,
+    mask_native_rects,
+    native_capture_region,
+    open_mss,
+    screen_at_native_point,
+    screen_native_rect,
+)
 from .settings import FontCustomConfig
 from .sounds import play_shutdown_sound_sync, play_startup_sound
 from .translator import TranslationLRUCache
@@ -47,7 +55,7 @@ from .ui.overlay import ScreenOverlay
 from .ui.pill import MiniRestorePill
 from .ui.snip import SNIP_HIDE_SETTLE_MS, SnipOverlay
 from .ui.toolbar import FloatingToolbar
-from .win32 import is_user_admin, user32
+from .win32 import apply_capture_affinity, is_user_admin, native_window_rect, set_hide_from_capture, user32
 from .workers import (
     HAS_RAPIDOCR,
     HAS_RU_WINOCR,
@@ -87,6 +95,12 @@ class GhostTranslateController(QWidget):
         self.ocr_backend: str = DEFAULT_OCR_BACKEND
         self.plaque_render_mode: str = DEFAULT_RENDER_STYLE
         self.font_cfg: FontCustomConfig = FontCustomConfig.load()
+        set_hide_from_capture(not self.font_cfg.game_mode)
+        # Игровой режим: плашки погашены, снимок ждёт, пока DWM покажет пустой оверлей.
+        self.capture_veiled = False
+        self._grab_scheduled = False
+        self._grab_check_static = True
+        self._grab_generation = 0
         self.job_id: int = 0
         self.monitor_interval_ms: int = 0
 
@@ -139,6 +153,7 @@ class GhostTranslateController(QWidget):
         self.font_popup.settings_changed.connect(self._on_font_settings_updated)
         self.font_popup.hotkeys_changed.connect(self._on_hotkeys_changed)
         self.font_popup.hotkey_capture_active.connect(self._set_hotkeys_suspended)
+        self.font_popup.game_mode_changed.connect(self._on_game_mode_changed)
 
         self.log_dialog = LogViewerDialog()
         self.log_dialog.btn_copy.clicked.connect(self.export_and_copy_logs)
@@ -247,6 +262,25 @@ class GhostTranslateController(QWidget):
         # Пункт 2.2 ТЗ v3.0: Мгновенное живое превью на текущих плашках без повторного OCR
         self._refresh_overlays()
 
+    def _own_windows(self) -> List[QWidget]:
+        return [*self.overlays, self.toolbar, self.font_popup, self.log_dialog, self.mini_pill]
+
+    def _on_game_mode_changed(self, enabled: bool) -> None:
+        set_hide_from_capture(not enabled)
+        # Скрытые окна получат режим в showEvent; видимым он ставится сразу.
+        for window in self._own_windows():
+            if window.isVisible():
+                apply_capture_affinity(window)
+        if enabled:
+            self.watchdog.disarm()
+        else:
+            self._arm_watchdog()
+        log_event(
+            "Игровой режим включён: окна видны захвату экрана, плашки гаснут на время снимка, watchdog отключён"
+            if enabled
+            else "Игровой режим выключен: окна снова скрыты от захвата экрана"
+        )
+
     # --------------------------------------------------------------------------
     # ПОТОКИ: ССЫЛКА ДЕРЖИТСЯ ДО finished, ИНАЧЕ QThread УДАЛЯЕТСЯ ВО ВРЕМЯ run()
     # --------------------------------------------------------------------------
@@ -340,6 +374,7 @@ class GhostTranslateController(QWidget):
         self.prev_small_gray = None
         self._frame_bgra = None
         self._frame_region = None
+        self._abort_scheduled_grab()
         self.clear_all_plaques()
         log_event(f"Область захвата сброшена: {reason}", "WARN")
 
@@ -397,6 +432,7 @@ class GhostTranslateController(QWidget):
         if self.is_hidden:
             self.monitor_timer.stop()
             self.watchdog.disarm()
+            self._abort_scheduled_grab()
             self._cancel_snipping()
             self.font_popup.hide()
             self.toolbar.hide()
@@ -467,6 +503,7 @@ class GhostTranslateController(QWidget):
         self.monitor_interval_ms = 0
         self.monitor_timer.stop()
         self.watchdog.disarm()
+        self._abort_scheduled_grab()
         self.toolbar.timer_combo.blockSignals(True)
         self.toolbar.timer_combo.setCurrentText("Ручной")
         self.toolbar.timer_combo.blockSignals(False)
@@ -637,8 +674,10 @@ class GhostTranslateController(QWidget):
     def _arm_watchdog(self) -> None:
         """Следит только за прямоугольником вокруг плашек: смена картинки там значит, что перевод устарел."""
         self.watchdog.disarm()
+        # В игровом режиме плашки попадают в снимок, и watchdog видел бы их вместо картинки под ними.
         if (
             self.monitor_interval_ms <= 0
+            or self.font_cfg.game_mode
             or self.is_hidden
             or self.pipeline_busy
             or self.snip_overlays
@@ -707,20 +746,70 @@ class GhostTranslateController(QWidget):
         if self.snip_overlays:
             self._schedule_next_monitor_tick()
             return
+        if self._grab_scheduled:
+            # Ручной запрос во время ожидания снимка отменяет проверку «экран не изменился».
+            self._grab_check_static = self._grab_check_static and check_static
+            return
         if self.pipeline_busy or (self.ocr_thread is not None and self.ocr_thread.isRunning()):
             self.pending_rescan = True
             return
 
-        screen, local_rect = self._capture_target()
+        screen, _local_rect = self._capture_target()
         if screen is None:
             return
         if self.target_screen is not screen:
             self.target_screen = screen
             self._refresh_overlays()
 
-        region = self._active_capture_mss_region()
+        if not self.font_cfg.game_mode:
+            self._grab_and_start(check_static)
+            return
+        self._grab_scheduled = True
+        self._grab_check_static = check_static
+        self.capture_veiled = True
+        self._refresh_overlays()
+        generation = self._grab_generation
+        QTimer.singleShot(CAPTURE_VEIL_SETTLE_MS, lambda: self._grab_after_veil(generation))
+
+    def _abort_scheduled_grab(self) -> None:
+        self._grab_generation += 1
+        self._grab_scheduled = False
+        if self.capture_veiled:
+            self.capture_veiled = False
+            self._refresh_overlays()
+
+    def _grab_after_veil(self, generation: int) -> None:
+        if generation != self._grab_generation or not self._grab_scheduled:
+            return
+        self._grab_scheduled = False
+        busy = self.pipeline_busy or (self.ocr_thread is not None and self.ocr_thread.isRunning())
+        if self.is_hidden or self.snip_overlays or busy:
+            self.capture_veiled = False
+            self._refresh_overlays()
+            if busy:
+                self.pending_rescan = True
+            else:
+                self._schedule_next_monitor_tick()
+            return
+        self._grab_and_start(self._grab_check_static)
+
+    def _grab_own_screen_frame(self, region: Optional[Dict[str, int]]) -> Optional[np.ndarray]:
+        """Снимок без собственных плашек: в игровом режиме они погашены, панель и попап закрашиваются."""
         img_bgra = self.safe_grab_screen(region)
-        if img_bgra is None:
+        if not self.capture_veiled:
+            return img_bgra
+        self.capture_veiled = False
+        self._refresh_overlays()
+        if img_bgra is not None and region is not None:
+            panels = [w for w in (self.toolbar, self.font_popup, self.log_dialog) if w.isVisible()]
+            mask_native_rects(img_bgra, region, [native_window_rect(w) for w in panels])
+        return img_bgra
+
+    def _grab_and_start(self, check_static: bool) -> None:
+        screen, local_rect = self._capture_target()
+        region = self._active_capture_mss_region()
+        img_bgra = self._grab_own_screen_frame(region)
+        if screen is None or img_bgra is None:
             self._schedule_next_monitor_tick()
             return
 

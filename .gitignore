@@ -30,3 +30,12 @@ installer_out/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# AI Studio preview runtime
+package.json
+package-lock.json
+node_modules/
+server.js
+index.html
+metadata.json
+.aistudio/

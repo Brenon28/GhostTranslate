@@ -25,10 +25,12 @@ class PlaqueLayout:
     font: QFont
     flags: int
     text: str
+    # Сдвиг текста вверх в плашке, сжатой до шага строк: буквы стоят ниже центра строки шрифта.
+    text_shift: int = 0
 
     @property
     def text_rect(self) -> QRect:
-        return self.rect.adjusted(PAD_X, PAD_Y, -PAD_X, -PAD_Y)
+        return self.rect.adjusted(PAD_X, PAD_Y - self.text_shift, -PAD_X, -PAD_Y - self.text_shift)
 
     def move_down(self, dy: int) -> None:
         self.rect.translate(0, dy)
@@ -191,6 +193,46 @@ def _neighbour_limits(block: OverlayBlock, blocks: List[OverlayBlock]) -> Tuple[
     return left, right
 
 
+def _row_room(lay: PlaqueLayout, blocks: List[OverlayBlock]) -> Optional[int]:
+    """Высота до ближайшего текста под плашкой: в оглавлении и списках это шаг строк."""
+    src = lay.block.rect
+    room: Optional[int] = None
+    for other in blocks:
+        o = other.rect
+        if other is lay.block or o.top() <= src.top() + src.height() // 2:
+            continue
+        if min(lay.rect.right(), o.right()) < max(lay.rect.left(), o.left()):
+            continue
+        gap = o.top() - src.top()
+        room = gap if room is None else min(room, gap)
+    if room is None or room < 0.7 * src.height():
+        return None
+    return room
+
+
+def _fit_to_row(lay: PlaqueLayout, room: int, font_cfg: FontCustomConfig) -> None:
+    """Однострочная плашка выше шага строк сдвигала бы вниз каждую следующую строку списка.
+
+    Строка шрифта на треть выше самих букв, поэтому плашка сжимается до шага строк, буквы
+    ставятся по её центру, а кегль уменьшается, только если не влезают и сами буквы.
+    """
+    font = lay.font
+    ink = QFontMetrics(font).tightBoundingRect(lay.text)
+    if not font_cfg.use_fixed_pt:
+        px = font.pixelSize()
+        while ink.height() > room - 2 * PAD_Y and px > MIN_READABLE_FONT_PX:
+            px -= 1
+            font = _make_font(font_cfg, px)
+            ink = QFontMetrics(font).tightBoundingRect(lay.text)
+    fm = QFontMetrics(font)
+    inner_h = room - 2 * PAD_Y
+    qt_baseline = (inner_h - fm.height()) / 2 + fm.ascent()
+    ink_baseline = (inner_h - ink.height()) / 2 - ink.top()
+    lay.font = font
+    lay.rect.setHeight(room)
+    lay.text_shift = int(round(qt_baseline - ink_baseline))
+
+
 def _stacks_over(lower: QRect, upper: QRect) -> bool:
     """Нижняя плашка налезает на верхнюю, стоящую над ней в той же колонке."""
     overlap_w = min(lower.right(), upper.right()) - max(lower.left(), upper.left())
@@ -222,7 +264,12 @@ def layout_blocks(
             if lay.block.rect.right() < block.rect.left() and _same_row(lay.block.rect, block.rect):
                 edge = lay.rect.right() + 2
                 left_limit = edge if left_limit is None else max(left_limit, edge)
-        layouts.append(layout_plaque(block, font_cfg, style_mode, bounds, right_limit, left_limit))
+        lay = layout_plaque(block, font_cfg, style_mode, bounds, right_limit, left_limit)
+        if not lay.flags & int(Qt.TextFlag.TextWordWrap):
+            room = _row_room(lay, blocks)
+            if room is not None and lay.rect.height() > room:
+                _fit_to_row(lay, room, font_cfg)
+        layouts.append(lay)
 
     layouts.sort(key=lambda lay: (lay.block.rect.top(), lay.block.rect.left()))
     placed: List[PlaqueLayout] = []

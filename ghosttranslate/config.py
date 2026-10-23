@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple
 # ==============================================================================
 # КОНСТАНТЫ И КОНФИГУРАЦИЯ (GHOSTTRANSLATE v3.0)
 # ==============================================================================
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 TRANSLATION_ENGINE = "native-ct2:int8-lite"
 DEFAULT_OCR_BACKEND = "WinOCR"
 DEFAULT_RENDER_STYLE = "wrap_gradient"
@@ -64,8 +64,12 @@ MIN_READABLE_FONT_PX = 12
 # Пункт 1.2 ТЗ v3.0: Строгий порог горизонтальной склейки (0.55 * h_avg) и вертикальной (0.75 * h_avg)
 MERGE_HORIZ_FACTOR = 0.55
 MERGE_VERT_FACTOR = 0.75
-# Строку WinOCR режет только пробел шире высоты строки: так стоят кнопки меню, а не слова фразы.
+# Строку WinOCR режет только пробел шире кегля строки: так стоят кнопки меню, а не слова фразы.
 MERGE_LINE_GAP_FACTOR = 1.0
+# Выравнивание по ширине (PDF, Word) растягивает пробелы до 1-2 кеглей, но одинаково по всей строке.
+# Такой пробел не разрыв, пока он не шире JUSTIFIED_GAP_SPREAD обычных пробелов этой строки.
+JUSTIFIED_GAP_FACTOR = 2.0
+JUSTIFIED_GAP_SPREAD = 1.6
 
 # Кадр для WinOCR увеличивается: на мелком тексте сайтов без этого пропадают слова.
 WINOCR_UPSCALE = 1.5

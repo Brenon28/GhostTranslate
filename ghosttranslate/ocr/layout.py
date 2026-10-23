@@ -3,7 +3,13 @@
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
-from ..config import MERGE_HORIZ_FACTOR, MERGE_LINE_GAP_FACTOR, MERGE_VERT_FACTOR
+from ..config import (
+    JUSTIFIED_GAP_FACTOR,
+    JUSTIFIED_GAP_SPREAD,
+    MERGE_HORIZ_FACTOR,
+    MERGE_LINE_GAP_FACTOR,
+    MERGE_VERT_FACTOR,
+)
 from ..models import RawWordBox
 
 
@@ -16,6 +22,37 @@ IDENTIFIER_REGEX = re.compile(
     r"(?:[rRuU]/\S+|[@#]\S+|\S*_\S*|https?://\S+|www\.\S+|\S+\.(?:com|net|org|io|gg|tv|ru|pl)\b\S*"
     r"|(?=[^\s]*\d)(?=[^\s]*[A-Za-z])[A-Za-z0-9]+)"
 )
+
+
+# Начало пункта списка или оглавления: «Note 15:», «STATEMENT II», «ANNEX IV», «Table 3.», «1.», «a)».
+# Число без точки или двоеточия («Over 50 people») меткой не считается: так начинается обычная строка.
+# OCR разрывает номер пробелом («Note 1 1 :») и читает «III» как «Ill». Одиночная «I» и «Ill» —
+# метка только после слова капсом: «Then I went» и «Feeling Ill» — обычные строки абзаца.
+LIST_LABEL_REGEX = re.compile(
+    r"^(?:[A-Z][A-Za-z]{2,}\s+\d{1,2}(?:\s?\d)?\s*[.:]"
+    r"|[A-Z]{3,}\s+(?:[IVXL]{1,5}|Il{1,2})\b"
+    r"|[A-Z][A-Za-z]{2,}\s+(?:II|III|IV|VI{0,3}|IX|XI{0,3})\b"
+    r"|(?:\d{1,3}|[a-z])[.)](?=\s))"
+)
+# Подпись и её значение в одной строке (метка оглавления и название) стоят дальше обычного пробела.
+ROW_JOIN_GAP_FACTOR = 1.5
+
+
+def starts_list_item(text: str) -> bool:
+    return LIST_LABEL_REGEX.match(text.strip()) is not None
+
+
+def _is_caps_heading(text: str) -> bool:
+    """Заголовок капсом («NOTES TO THE FINANCIAL STATEMENTS») не продолжает строку обычного текста."""
+    letters = [ch for ch in text if ch.isalpha()]
+    return len(text.split()) >= 2 and len(letters) >= 4 and all(ch.isupper() for ch in letters)
+
+
+def _is_bare_list_label(words: List[RawWordBox]) -> bool:
+    """«STATEMENT II» или «Note 15:» без названия: название стоит справа через отступ."""
+    text = " ".join(word.text for word in words).strip() + " "
+    match = LIST_LABEL_REGEX.match(text)
+    return match is not None and not text[match.end():].strip(" .:-–—")
 
 
 def is_identifier_token(token: str) -> bool:
@@ -276,18 +313,32 @@ def estimate_font_px(words: List[RawWordBox]) -> float:
 def _split_ocr_line(line: List[RawWordBox]) -> List[List[RawWordBox]]:
     """Строка WinOCR рвётся только там, где стоят отдельные пункты меню.
 
-    Порог считается от высоты всей строки, а не соседних слов: рамка «as» или «on»
-    ниже рамки «Bots,» почти вдвое, и по ней обычный пробел выглядел бы разрывом.
+    Порог считается от кегля всей строки, а не от рамок соседних слов: рамка «as» или «on»
+    ниже рамки «Bots,» почти вдвое, а рамка «Other» ниже кегля на четверть,
+    и по ним обычный пробел выглядел бы разрывом.
     """
     line = sorted(line, key=lambda word: word.x1)
-    line_h = max(word.height for word in line)
+    unit = max(max(word.height for word in line), estimate_font_px(line))
+    gaps = sorted(b.x1 - a.x2 for a, b in zip(line, line[1:]) if b.x1 > a.x2)
+    usual_gap = gaps[(len(gaps) - 1) // 2] if gaps else 0
+
+    def is_word_space(gap: int) -> bool:
+        if gap < -unit:
+            return False
+        if gap <= MERGE_LINE_GAP_FACTOR * unit:
+            return True
+        return gap <= JUSTIFIED_GAP_FACTOR * unit and gap <= JUSTIFIED_GAP_SPREAD * usual_gap
+
     groups: List[List[RawWordBox]] = []
     current: List[RawWordBox] = [line[0]]
     for word in line[1:]:
         prev = current[-1]
-        gap = word.x1 - prev.x2
         blocked = prev.split_from_bullet or word.split_from_bullet or word.break_before
-        if (not blocked) and -line_h <= gap <= MERGE_LINE_GAP_FACTOR * line_h:
+        gap = word.x1 - prev.x2
+        # «STATEMENT II — Statement of...»: тире после метки пункта не разделитель меню.
+        if 0 <= gap <= ROW_JOIN_GAP_FACTOR * unit and _is_bare_list_label(current):
+            current.append(word)
+        elif (not blocked) and is_word_space(gap):
             current.append(word)
         else:
             groups.append(current)
@@ -313,7 +364,42 @@ def _cluster_words_into_lines(words: List[RawWordBox]) -> List[List[RawWordBox]]
     groups: List[List[RawWordBox]] = []
     for line in ocr_lines.values():
         groups.extend(_split_ocr_line(line))
-    return groups + _cluster_loose_words(loose)
+    return _join_row_neighbours(groups) + _cluster_loose_words(loose)
+
+
+def _join_row_neighbours(groups: List[List[RawWordBox]]) -> List[List[RawWordBox]]:
+    """Склеивает части одной строки экрана, которые WinOCR вернул разными строками.
+
+    В оглавлении «Note 15:» и «Advance Receipts» приходят отдельно, хотя между ними обычный пробел.
+    Части, разделённые широким промежутком или разделителем меню, остаются отдельными. Разделитель
+    вплотную к слову («Note 6.•Inventories») — это прочитанное как «•» двоеточие: у пункта меню
+    разделитель стоит с пробелами по бокам.
+    """
+    groups = sorted(groups, key=lambda g: min(w.x1 for w in g))
+    joined: List[List[RawWordBox]] = []
+    for group in groups:
+        first = min(group, key=lambda w: w.x1)
+        target = None
+        for candidate in joined:
+            last = max(candidate, key=lambda w: w.x2)
+            if last.line_id == first.line_id or not _boxes_share_text_line(last, first):
+                continue
+            unit = max(last.height, first.height, estimate_font_px(candidate))
+            gap = first.x1 - last.x2
+            if first.break_before or first.split_from_bullet:
+                max_gap = 0.5 * unit
+            elif _is_bare_list_label(candidate):
+                max_gap = ROW_JOIN_GAP_FACTOR * unit
+            else:
+                max_gap = MERGE_LINE_GAP_FACTOR * unit
+            if 0 <= gap <= max_gap:
+                target = candidate
+                break
+        if target is None:
+            joined.append(list(group))
+        else:
+            target.extend(group)
+    return joined
 
 
 def _cluster_loose_words(usable: List[RawWordBox]) -> List[List[RawWordBox]]:
@@ -395,9 +481,27 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
         word_cnt = len(lb.text.split())
         return has_lower or word_cnt >= 3
 
+    def _covers_foreign_line(para: List[RawWordBox], line_box: RawWordBox) -> bool:
+        """Рамка абзаца с новой строкой накрыла бы строку, которая в абзац не входит.
+
+        Так в оглавлении названия разделов склеивались через метку «STATEMENT II» в той же строке,
+        и её плашка оказывалась внутри плашки абзаца.
+        """
+        x1 = min(min(l.x1 for l in para), line_box.x1)
+        y1 = min(min(l.y1 for l in para), line_box.y1)
+        x2 = max(max(l.x2 for l in para), line_box.x2)
+        y2 = max(max(l.y2 for l in para), line_box.y2)
+        for other in merged_lines:
+            if other is line_box or any(other is l for l in para):
+                continue
+            if min(x2, other.x2) - max(x1, other.x1) > 2 and min(y2, other.y2) - max(y1, other.y1) > 2:
+                return True
+        return False
+
     for line_box in merged_lines:
         placed_in_para = False
-        if _is_dense_paragraph_line(line_box):
+        # Пункт списка начинает свой блок: иначе оглавление склеивалось в «Note 15: Note 16: Note 17:».
+        if _is_dense_paragraph_line(line_box) and not starts_list_item(line_box.text):
             for para in reversed(para_clusters):
                 last_line = para[-1]
                 if not _is_dense_paragraph_line(last_line):
@@ -420,7 +524,9 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
                 if (
                     -4 <= v_gap < MERGE_VERT_FACTOR * h_avg
                     and height_ratio <= 1.35
+                    and _is_caps_heading(last_line.text) == _is_caps_heading(line_box.text)
                     and (horiz_overlap > 0 or left_aligned or center_aligned)
+                    and not _covers_foreign_line(para, line_box)
                 ):
                     para.append(line_box)
                     placed_in_para = True

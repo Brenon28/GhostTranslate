@@ -79,6 +79,19 @@ class PlaqueLayoutTests(unittest.TestCase):
         lay = layouts_by_text([play])["PLAY"]
         self.assertEqual(lay.rect.center().x(), play.rect.center().x())
 
+    def test_dense_list_rows_keep_their_places(self):
+        # Строки оглавления с шагом 18 px: плашка в высоту строки шрифта (24 px) сдвигала бы каждую следующую.
+        rows = [
+            block(189, 508 + 18 * i, 260, 20, f"Note {i + 1}: Item", f"Примечание {i + 1}: Пункт списка", font_px=18)
+            for i in range(10)
+        ]
+        lays = layout_blocks(rows, FontCustomConfig(), "wrap_gradient", SCREEN)
+        for lay in lays:
+            self.assertEqual(lay.rect.top(), lay.block.rect.top())
+            self.assertGreaterEqual(lay.font.pixelSize(), MIN_READABLE_FONT_PX)
+        for upper, lower in zip(lays, lays[1:]):
+            self.assertFalse(upper.rect.intersects(lower.rect))
+
     def test_single_line_style_never_wraps(self):
         line = block(10, 10, 200, 20, "orig", "очень длинный перевод " * 20)
         lay = layouts_by_text([line], style="single")["orig"]

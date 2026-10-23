@@ -84,6 +84,50 @@ class OcrLineTests(unittest.TestCase):
         self.assertEqual(paragraphs[0].lines_merged, 2)
         self.assertAlmostEqual(paragraphs[0].font_px, 14, delta=1.5)
 
+    def test_justified_line_stays_together(self):
+        # PDF с выравниванием по ширине: все пробелы строки растянуты до 22 px при кегле 18.
+        words = ocr_line(0, 950, [(552, 27, 13, "with"), (601, 25, 13, "the"), (648, 110, 13, "organizational"),
+                                  (780, 96, 13, "arrangements,"), (898, 25, 13, "the")])
+        texts = [item.text for item in merge_ocr_boxes_into_paragraphs(words)]
+        self.assertEqual(texts, ["with the organizational arrangements, the"])
+
+    def test_contents_rows_stay_separate_items(self):
+        # Оглавление PDF: WinOCR отдаёт номер и название пункта разными строками через обычный пробел.
+        words = []
+        for row, (label, title) in enumerate([("15:", "Advance Receipts"), ("16:", "Borrowings"),
+                                              ("17:", "Provisions")]):
+            y = 762 + 18 * row
+            words += ocr_line(2 * row, y, [(189, 32, 13, "Note"), (226, 20, 13, label)])
+            x = 252
+            items = []
+            for word in title.split():
+                items.append((x, 9 * len(word), 13, word))
+                x += 9 * len(word) + 5
+            words += ocr_line(2 * row + 1, y, items)
+        texts = sorted(item.text for item in merge_ocr_boxes_into_paragraphs(words))
+        self.assertEqual(texts, ["Note 15: Advance Receipts", "Note 16: Borrowings", "Note 17: Provisions"])
+
+    def test_dash_after_item_label_is_not_a_menu_separator(self):
+        words = ocr_line(0, 420, [(110, 94, 13, "STATEMENT"), (210, 7, 13, "II"), (222, 10, 3, "—"),
+                                  (236, 71, 13, "Statement"), (312, 13, 13, "of"), (330, 61, 13, "Financial"),
+                                  (398, 88, 13, "Performance")])
+        texts = [item.text for item in merge_ocr_boxes_into_paragraphs(words)]
+        self.assertEqual(texts, ["STATEMENT II Statement of Financial Performance"])
+
+    def test_caps_heading_does_not_continue_a_line(self):
+        words = ocr_line(0, 472, [(110, 109, 13, "STATEMENT"), (225, 30, 13, "V:"), (260, 72, 13, "Statement"),
+                                  (337, 15, 13, "of"), (357, 90, 13, "Comparison")])
+        words += ocr_line(1, 490, [(110, 60, 13, "NOTES"), (175, 25, 13, "TO"), (205, 35, 13, "THE"),
+                                   (245, 90, 13, "FINANCIAL")])
+        texts = sorted(item.text for item in merge_ocr_boxes_into_paragraphs(words))
+        self.assertEqual(texts, ["NOTES TO THE FINANCIAL", "STATEMENT V: Statement of Comparison"])
+
+    def test_sentence_starting_with_pronoun_i_continues_the_paragraph(self):
+        words = ocr_line(0, 196, [(967, 40, 13, "When"), (1012, 60, 10, "playing"), (1077, 25, 13, "the")])
+        words += ocr_line(1, 216, [(967, 38, 13, "Then"), (1010, 4, 13, "I"), (1019, 36, 13, "went")])
+        paragraphs = merge_ocr_boxes_into_paragraphs(words)
+        self.assertEqual([p.text for p in paragraphs], ["When playing the Then I went"])
+
 
 class FontEstimateTests(unittest.TestCase):
     def test_line_without_tall_letters_is_not_smaller(self):

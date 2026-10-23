@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 echo ============================================================================
-echo   Сборка легкого дистрибутива GhostTranslate v3.2 (Без PyTorch и Stanza!)
+echo   Сборка легкого дистрибутива GhostTranslate v3.3 (Без PyTorch и Stanza!)
 echo ============================================================================
 
 echo [1/4] Завершение запущенных экземпляров GhostTranslate...
@@ -30,5 +30,5 @@ if exist "model_en_ru" (
 )
 
 echo [4/4] Готово! Исполняемый файл собран: dist\GhostTranslate\GhostTranslate.exe
-echo Теперь вы можете запустить Inno Setup со скриптом installer.iss для создания GhostTranslate_v3.2_Setup.exe (~245 МБ).
+echo Теперь вы можете запустить Inno Setup со скриптом installer.iss для создания GhostTranslate_v3.3_Setup.exe (~245 МБ).
 pause

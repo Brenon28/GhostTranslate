@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Optional second OCR. The app starts without it and uses Windows OCR.
+rapidocr-onnxruntime>=1.4
+
+# Rebuild dist\GhostTranslate. Inno Setup is a separate Windows installer.
+pyinstaller>=6.11

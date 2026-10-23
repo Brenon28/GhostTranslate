@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Runtime next to the script
+*.log
+settings.json
+ghost_report_bundle.txt
+
+# Translation weights. model.bin is about 204 MB; GitHub rejects files over 100 MB.
+model_en_ru/
+*.argosmodel
+
+# PyInstaller and Inno Setup output
+build/
+dist/
+installer_out/
+
+# Local archives
+*.zip
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

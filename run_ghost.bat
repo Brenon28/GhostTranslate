@@ -1,8 +1,14 @@
 @echo off
 chcp 65001 >nul
-echo [1/2] Завершение старых экземпляров GhostTranslate...
-taskkill /F /IM GhostTranslate.exe /T >nul 2>&1
-taskkill /F /IM pythonw.exe /T >nul 2>&1
+cd /d "%~dp0"
 
-echo [2/2] Запуск GhostTranslate v3.0 (F8: Скрыть/Раскрыть, F9: Выделить, NativeCT2 Lite Core)...
-python main.py
+echo [1/2] Завершение собранного GhostTranslate.exe, если он запущен...
+taskkill /F /IM GhostTranslate.exe /T >nul 2>&1
+
+echo [2/2] Запуск GhostTranslate v3.0
+echo       F8: скрыть или показать, F9: выделить область
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" main.py
+) else (
+    py -3.12 main.py
+)

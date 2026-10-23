@@ -534,6 +534,7 @@ class NativeCT2Translator:
         self.sp_processor: Optional["spm.SentencePieceProcessor"] = None
         self.model_dir: Optional[str] = None
         self.ready: bool = False
+        self._translate_lock = threading.Lock()
 
     def _locate_or_extract_model_dir(self) -> Optional[str]:
         candidates = [
@@ -551,13 +552,9 @@ class NativeCT2Translator:
                     candidates.append(os.path.join(full_entry, "model"))
 
         for cand in candidates:
-            if os.path.isdir(cand):
-                model_sub = os.path.join(cand, "model") if os.path.isdir(os.path.join(cand, "model")) else cand
-                sp_cand = os.path.join(cand, "sentencepiece.model")
-                if not os.path.isfile(sp_cand):
-                    sp_cand = os.path.join(model_sub, "sentencepiece.model")
-                if os.path.isfile(os.path.join(model_sub, "model.bin")) and os.path.isfile(sp_cand):
-                    return cand
+            accepted = self._accepted_model_dir(cand)
+            if accepted:
+                return accepted
 
         # Если рядом лежит архив .argosmodel/.zip — распаковываем без argostranslate
         for root_search in [BASE_DIR, os.path.join(home, ".local", "share", "argos-translate", "downloads")]:
@@ -572,13 +569,42 @@ class NativeCT2Translator:
                         with zipfile.ZipFile(archive_path, "r") as zf:
                             zf.extractall(target_extract)
                         log_event(f"Модель EN->RU распакована напрямую из {archive_path} в {target_extract}")
-                        for sub in os.listdir(target_extract):
-                            sub_path = os.path.join(target_extract, sub)
-                            if os.path.isdir(sub_path):
-                                return sub_path
-                        return target_extract
+                        accepted = self._accepted_model_dir(target_extract)
+                        if accepted:
+                            return accepted
                     except Exception as exc:
                         log_event(f"Ошибка распаковки {archive_path}: {exc}", "WARN")
+        return None
+
+    @staticmethod
+    def _accepted_model_dir(cand: str) -> Optional[str]:
+        """Каталог, внутри которого лежат model.bin и sentencepiece.model.
+
+        Архив Argos часто распаковывается во вложенную папку, поэтому одного
+        первого подкаталога недостаточно: ищем пару файлов на небольшую глубину.
+        """
+        if not cand or not os.path.isdir(cand):
+            return None
+
+        roots = [cand]
+        for dirpath, dirnames, _filenames in os.walk(cand):
+            depth = dirpath[len(cand):].count(os.sep)
+            if depth >= 3:
+                dirnames.clear()
+                continue
+            roots.append(dirpath)
+
+        seen = set()
+        for root in roots:
+            if root in seen:
+                continue
+            seen.add(root)
+            model_sub = os.path.join(root, "model") if os.path.isdir(os.path.join(root, "model")) else root
+            sp_cand = os.path.join(root, "sentencepiece.model")
+            if not os.path.isfile(sp_cand):
+                sp_cand = os.path.join(model_sub, "sentencepiece.model")
+            if os.path.isfile(os.path.join(model_sub, "model.bin")) and os.path.isfile(sp_cand):
+                return root
         return None
 
     def initialize(self) -> None:
@@ -605,7 +631,13 @@ class NativeCT2Translator:
                 compute_type="int8",
                 inter_threads=4,
             )
-            self.sp_processor = spm.SentencePieceProcessor(model_file=sp_path)
+            # SentencePiece открывает путь через узкий API и не видит кириллицу вроде «ПетПроекты».
+            # Файл читает Python, в токенизатор отдаются уже байты модели.
+            self.sp_processor = spm.SentencePieceProcessor()
+            with open(sp_path, "rb") as sp_file:
+                loaded = self.sp_processor.LoadFromSerializedProto(sp_file.read())
+            if not loaded:
+                raise RuntimeError(f"Не удалось прочитать токенизатор: {sp_path}")
             self.model_dir = found_dir
             self.ready = True
 
@@ -627,6 +659,10 @@ class NativeCT2Translator:
         if not texts:
             return []
 
+        with self._translate_lock:
+            return self._translate_batch_locked(texts)
+
+    def _translate_batch_locked(self, texts: List[str]) -> List[str]:
         results: List[Optional[str]] = [None] * len(texts)
         ct2_indices: List[int] = []
         ct2_inputs: List[str] = []
@@ -2549,7 +2585,6 @@ class GhostARCanvasWindow(QMainWindow):
 
     def _on_ocr_blocks_ready(self, blocks: List[OverlayBlock], signature: str, job_id: int):
         if job_id != self.job_id:
-            self.pipeline_busy = False
             return
 
         if not blocks:
@@ -2606,12 +2641,23 @@ class GhostARCanvasWindow(QMainWindow):
     # ПУНКТ 3.2 И 3.3 ТЗ v3.0: РЕГИСТРАЦИЯ F8 / F9 (RegisterHotKey + GetAsyncKeyState 25 мс)
     # --------------------------------------------------------------------------
     def _register_global_f8_f9_hotkeys(self):
+        """Один канал на клавишу. RegisterHotKey и опрос вместе прячут окно и сразу открывают его снова."""
+        self._hotkeys_registered = False
+        hwnd = int(self.winId())
         try:
-            hwnd = int(self.winId())
-            user32.RegisterHotKey(hwnd, HOTKEY_ID_F8, 0, VK_F8)
-            user32.RegisterHotKey(hwnd, HOTKEY_ID_F9, 0, VK_F9)
+            ok_f8 = bool(user32.RegisterHotKey(hwnd, HOTKEY_ID_F8, 0, VK_F8))
+            ok_f9 = bool(user32.RegisterHotKey(hwnd, HOTKEY_ID_F9, 0, VK_F9))
+            if ok_f8 and ok_f9:
+                self._hotkeys_registered = True
+                log_event("Глобальные F8/F9 зарегистрированы через RegisterHotKey")
+                return
+            if ok_f8:
+                user32.UnregisterHotKey(hwnd, HOTKEY_ID_F8)
+            if ok_f9:
+                user32.UnregisterHotKey(hwnd, HOTKEY_ID_F9)
+            log_event("RegisterHotKey F8/F9 недоступен, работает опрос клавиатуры", "WARN")
         except Exception as exc:
-            log_event(f"Примечание RegisterHotKey F8/F9 (активен поллер GetAsyncKeyState): {exc}", "INFO")
+            log_event(f"RegisterHotKey F8/F9: {exc}. Работает опрос клавиатуры", "WARN")
 
     def nativeEvent(self, eventType, message):
         try:
@@ -2653,17 +2699,13 @@ class GhostARCanvasWindow(QMainWindow):
         lmb_down = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
         esc_down = bool(user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)
 
-        # 1. Клавиша F8 (0x77) -> Скрыть / Показать оверлей и панель (edge-trigger)
-        if f8_down and not self._prev_f8_down:
-            self.toggle_visibility()
-            self._prev_f8_down = f8_down
-            return
-
-        # 2. Клавиша F9 (0x78) -> Начать выделение области захвата (edge-trigger)
-        if f9_down and not self._prev_f9_down:
-            self.start_snipping_mode()
-            self._prev_f9_down = f9_down
-            return
+        # F8/F9 через опрос только если RegisterHotKey не занял эти клавиши.
+        # Иначе то же нажатие приходит и сообщением WM_HOTKEY, и опросом: окно прячется и сразу возвращается.
+        if not self._hotkeys_registered:
+            if f8_down and not self._prev_f8_down:
+                self.toggle_visibility()
+            elif f9_down and not self._prev_f9_down:
+                self.start_snipping_mode()
 
         # 3. Клавиша ESC -> Отмена режима выделения области
         if esc_down and not self._prev_esc_down and (self.manual_snip_armed or self._is_selecting_region):

@@ -1,11 +1,10 @@
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 import win32con
 import win32gui
 from PyQt6.QtCore import QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import (
     QColor,
-    QFont,
     QFontMetrics,
     QLinearGradient,
     QPainter,
@@ -17,11 +16,10 @@ from PyQt6.QtGui import (
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
-from ..config import FONT_HEIGHT_RATIO
 from ..models import OverlayBlock
-from ..ocr.layout import place_plaque_around
 from ..settings import FontCustomConfig
 from ..win32 import exclude_from_capture
+from .plaque_layout import layout_blocks, wrap_lines
 
 if TYPE_CHECKING:
     from ..controller import GhostTranslateController
@@ -35,65 +33,40 @@ def paint_overlay_blocks(
     blocks: List[OverlayBlock],
     font_cfg: FontCustomConfig,
     style_mode: str,
+    bounds: Optional[QRect] = None,
 ) -> None:
-    weight = QFont.Weight.Bold if font_cfg.is_bold else QFont.Weight.Medium
+    if bounds is None:
+        device = painter.device()
+        bounds = QRect(0, 0, device.width(), device.height())
 
-    for block in blocks:
-        r = block.rect
+    for lay in layout_blocks(blocks, font_cfg, style_mode, bounds):
+        block = lay.block
         if block.is_pending:
             painter.setPen(QPen(QColor(168, 85, 247, 190), 1.0))
             painter.setBrush(QColor(138, 92, 245, 95))
-            painter.drawRoundedRect(QRectF(r), 4.0, 4.0)
+            painter.drawRoundedRect(QRectF(lay.rect), 4.0, 4.0)
             continue
 
-        single_line_h = max(12, int(r.height() / max(1, block.lines_merged)))
-        auto_font_px = max(10, int(single_line_h * FONT_HEIGHT_RATIO))
-        if font_cfg.use_fixed_pt:
-            font_px = max(9, min(46, int(round(font_cfg.fixed_pt * 1.333))))
-        else:
-            scale_mult = max(0.6, min(1.8, font_cfg.scale_percent / 100.0))
-            font_px = max(8, min(48, int(round(auto_font_px * scale_mult))))
-
-        font = QFont(font_cfg.font_family, -1, weight)
-        font.setPixelSize(font_px)
-        fm = QFontMetrics(font)
-        text_w = fm.horizontalAdvance(block.trans_text)
-
-        draw_rect = QRect(r)
-        use_word_wrap = False
-
-        allow_wrap_in_mode = style_mode in ("wrap_gradient", "dark_glass", "cyber_neon", "high_contrast")
-        if allow_wrap_in_mode and (
-            block.lines_merged >= 2 or (text_w > r.width() * 1.35 and len(block.trans_text.split()) >= 3)
-        ):
-            use_word_wrap = True
-            draw_rect.setWidth(max(r.width() + 10, int(r.width() * 1.12)))
-            if not font_cfg.use_fixed_pt:
-                est_lines = max(2, int(round(text_w / max(40, draw_rect.width() - 12))) + 1)
-                max_font_by_h = max(10, int((draw_rect.height() - 6) / max(1.8, est_lines * 1.18)))
-                font_px = min(font_px, max(10, int(max_font_by_h * (font_cfg.scale_percent / 100.0))))
-                font.setPixelSize(font_px)
-            req_h = int(2 * font_px * 1.24) + 8
-            if req_h > draw_rect.height():
-                draw_rect.setHeight(min(int(r.height() * 1.35) + 12, req_h))
-        elif text_w > r.width() - 6 and not font_cfg.use_fixed_pt:
-            expanded_w = int(r.width() * 1.12)
-            if text_w <= expanded_w - 6:
-                draw_rect.setWidth(text_w + 8)
-            else:
-                draw_rect.setWidth(expanded_w)
-                ratio = max(0.55, (expanded_w - 6) / max(1, text_w))
-                font_px = max(8, int(font_px * ratio))
-                font.setPixelSize(font_px)
-
-        draw_rect = place_plaque_around(r, draw_rect.width(), draw_rect.height())
+        draw_rect = lay.rect
+        font = lay.font
 
         if style_mode == "outline_only":
             painter.setFont(font)
             fm_outline = QFontMetrics(font)
             text_path = QPainterPath()
-            baseline_y = draw_rect.y() + (draw_rect.height() + fm_outline.ascent() - fm_outline.descent()) // 2
-            text_path.addText(float(draw_rect.x() + 2), float(baseline_y), font, block.trans_text)
+            text_rect = lay.text_rect
+            if lay.flags & int(Qt.TextFlag.TextWordWrap):
+                lines = wrap_lines(font, lay.text, text_rect.width())
+                baseline_y = text_rect.y() + fm_outline.ascent()
+            else:
+                lines = [lay.text]
+                baseline_y = text_rect.y() + (text_rect.height() + fm_outline.ascent() - fm_outline.descent()) // 2
+            for line in lines:
+                text_x = text_rect.x()
+                if lay.flags & int(Qt.AlignmentFlag.AlignHCenter):
+                    text_x += max(0, (text_rect.width() - fm_outline.horizontalAdvance(line)) // 2)
+                text_path.addText(float(text_x), float(baseline_y), font, line)
+                baseline_y += fm_outline.lineSpacing()
 
             outline_pen = QPen(
                 QColor(0, 0, 0, 245),
@@ -141,20 +114,7 @@ def paint_overlay_blocks(
 
         painter.setFont(font)
         painter.setPen(text_color)
-
-        # Пункт 1.2 и 2.1 ТЗ v3.0: Кнопки меню центрируются (AlignCenter), абзацы — по левому краю
-        if font_cfg.text_align == "center":
-            horiz_flag = Qt.AlignmentFlag.AlignCenter
-        elif font_cfg.text_align == "left":
-            horiz_flag = Qt.AlignmentFlag.AlignLeft
-        else:
-            is_short_ui_button = (block.lines_merged == 1 and len(block.orig_text.split()) <= 2)
-            horiz_flag = Qt.AlignmentFlag.AlignCenter if is_short_ui_button else Qt.AlignmentFlag.AlignLeft
-
-        flags = Qt.AlignmentFlag.AlignVCenter | horiz_flag
-        if use_word_wrap:
-            flags |= Qt.TextFlag.TextWordWrap
-        painter.drawText(draw_rect.adjusted(4, 2, -4, -2), flags, block.trans_text)
+        painter.drawText(lay.text_rect, lay.flags, lay.text)
 
 
 class ScreenOverlay(QWidget):
@@ -240,4 +200,4 @@ class OverlayCanvas(QOpenGLWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(ctrl.region_rect.adjusted(1, 1, -1, -1))
 
-        paint_overlay_blocks(painter, ctrl.overlay_blocks, ctrl.font_cfg, ctrl.plaque_render_mode)
+        paint_overlay_blocks(painter, ctrl.overlay_blocks, ctrl.font_cfg, ctrl.plaque_render_mode, self.rect())

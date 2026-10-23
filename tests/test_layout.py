@@ -2,16 +2,15 @@ import sys
 import unittest
 from pathlib import Path
 
-from PyQt6.QtCore import QRect
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ghosttranslate.models import RawWordBox
 from ghosttranslate.ocr.layout import (
     drop_words_over_russian,
+    estimate_font_px,
     is_clean_russian_word,
+    is_valid_english_box,
     looks_like_garbled_latin,
     merge_ocr_boxes_into_paragraphs,
-    place_plaque_around,
     russian_reading_wins,
 )
 
@@ -43,12 +42,75 @@ class LayoutTests(unittest.TestCase):
         texts = sorted(item.text for item in merge_ocr_boxes_into_paragraphs([box(10, 10, 220, 24, "PLAY•EVENT")]))
         self.assertEqual(texts, ["EVENT", "PLAY"])
 
-    def test_wider_plaque_keeps_the_source_center(self):
-        anchor = QRect(100, 80, 40, 20)
-        placed = place_plaque_around(anchor, 80, 24)
-        self.assertEqual(placed.center(), anchor.center())
-        self.assertEqual(placed.width(), 80)
-        self.assertLess(placed.left(), anchor.left())
+
+def ocr_line(line_id, y, items):
+    """Слова одной строки WinOCR: (x, ширина, высота, текст); низ рамок разный, как у реального OCR."""
+    return [
+        RawWordBox(x1=x, y1=y + (13 - h if h < 13 else 0), x2=x + w, y2=y + 13 if h <= 13 else y + h,
+                   text=text, score=0.95, line_id=line_id)
+        for x, w, h, text in items
+    ]
+
+
+class OcrLineTests(unittest.TestCase):
+    def test_short_words_do_not_break_a_web_line(self):
+        # С реальной страницы Reddit: у «as» рамка 7 px, у «Bots,» 13 px, пробел 4-6 px.
+        words = ocr_line(0, 923, [(1039, 29, 13, "Bots,"), (1073, 13, 7, "as"), (1090, 35, 10, "actual"),
+                                  (1131, 41, 10, "human"), (1177, 42, 13, "players")])
+        texts = [item.text for item in merge_ocr_boxes_into_paragraphs(words)]
+        self.assertEqual(texts, ["Bots, as actual human players"])
+
+    def test_wide_gap_inside_ocr_line_splits_menu_items(self):
+        words = ocr_line(0, 70, [(42, 68, 13, "PLAY"), (242, 87, 13, "EVENT"), (462, 70, 13, "BATTLE"),
+                                 (538, 50, 13, "PASS")])
+        texts = sorted(item.text for item in merge_ocr_boxes_into_paragraphs(words))
+        self.assertEqual(texts, ["BATTLE PASS", "EVENT", "PLAY"])
+
+    def test_standalone_separator_splits_items(self):
+        words = ocr_line(0, 70, [(10, 50, 13, "STORE"), (64, 3, 13, "|"), (71, 60, 13, "PROFILE")])
+        texts = sorted(item.text for item in merge_ocr_boxes_into_paragraphs(words))
+        self.assertEqual(texts, ["PROFILE", "STORE"])
+
+    def test_slash_inside_word_is_not_a_menu_separator(self):
+        words = ocr_line(0, 128, [(967, 60, 20, "Wake"), (1031, 30, 20, "up,"), (1065, 99, 20, "EA/DICE")])
+        texts = [item.text for item in merge_ocr_boxes_into_paragraphs(words)]
+        self.assertEqual(texts, ["Wake up, EA/DICE"])
+
+    def test_paragraph_lines_merge_and_keep_font_size(self):
+        words = ocr_line(0, 196, [(967, 2, 10, "I"), (975, 25, 10, "like"), (1004, 72, 13, "playing")])
+        words += ocr_line(1, 216, [(967, 50, 10, "addressed"), (1021, 15, 13, "by"), (1040, 33, 10, "DICE")])
+        paragraphs = merge_ocr_boxes_into_paragraphs(words)
+        self.assertEqual(len(paragraphs), 1)
+        self.assertEqual(paragraphs[0].lines_merged, 2)
+        self.assertAlmostEqual(paragraphs[0].font_px, 14, delta=1.5)
+
+
+class FontEstimateTests(unittest.TestCase):
+    def test_line_without_tall_letters_is_not_smaller(self):
+        # «- bot lobbies» и «game hangs» набраны одним кеглем 14 px, хотя рамки у них 10 и 13 px.
+        lobbies = ocr_line(0, 0, [(0, 5, 1, "-"), (10, 20, 10, "bot"), (35, 43, 10, "lobbies")])
+        hangs = ocr_line(1, 0, [(0, 35, 10, "game"), (40, 37, 13, "hangs")])
+        self.assertAlmostEqual(estimate_font_px(lobbies), 14, delta=1)
+        self.assertAlmostEqual(estimate_font_px(hangs), 14, delta=1)
+
+    def test_icon_read_as_letter_is_ignored(self):
+        award = ocr_line(0, 0, [(0, 12, 18, "a"), (20, 35, 10, "Award")])
+        self.assertAlmostEqual(estimate_font_px(award), 14, delta=1)
+
+
+class EnglishBoxFilterTests(unittest.TestCase):
+    def test_paragraph_ending_with_colon_is_kept(self):
+        self.assertTrue(is_valid_english_box("issues do not get addressed by DICE or even acknowledged:"))
+        self.assertFalse(is_valid_english_box("Ресурс: Дерево"))
+
+    def test_nicknames_and_links_are_not_translated(self):
+        for text in ("r/Battlefield6", "u/VOLBANKER", "_Steven_Seagal_", "T4Abyss", "reddit.com/r/test"):
+            self.assertFalse(is_valid_english_box(text), text)
+        self.assertTrue(is_valid_english_box("Search in r/Battlefield6"))
+
+    def test_number_with_unit_is_not_ocr_garbage(self):
+        for text in ("3mo", "24h", "1.2k"):
+            self.assertFalse(looks_like_garbled_latin(text), text)
 
 
 # Оценки SentencePiece модели EN-RU для слов с реального экрана (лог-вероятность на букву).

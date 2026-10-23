@@ -1,4 +1,5 @@
-from typing import Dict
+import re
+from typing import Dict, Optional, Tuple
 
 
 # ==============================================================================
@@ -195,3 +196,66 @@ GAME_UI_DICT: Dict[str, str] = {
     "ai features": "ИИ-функции",
     "view changes": "Посмотреть изменения",
 }
+
+
+# ==============================================================================
+# ШАБЛОНЫ С ЧИСЛАМИ: «35m ago», «471 upvotes». Модель переводит их как «35 лет назад».
+# ==============================================================================
+def russian_plural(count: int, one: str, few: str, many: str) -> str:
+    tail100, tail10 = count % 100, count % 10
+    if 11 <= tail100 <= 14:
+        return many
+    if tail10 == 1:
+        return one
+    if 2 <= tail10 <= 4:
+        return few
+    return many
+
+
+AGO_UNITS: Dict[str, Tuple[str, str, str]] = {
+    "s": ("секунду", "секунды", "секунд"),
+    "sec": ("секунду", "секунды", "секунд"),
+    "m": ("минуту", "минуты", "минут"),
+    "min": ("минуту", "минуты", "минут"),
+    "h": ("час", "часа", "часов"),
+    "hr": ("час", "часа", "часов"),
+    "d": ("день", "дня", "дней"),
+    "w": ("неделю", "недели", "недель"),
+    "mo": ("месяц", "месяца", "месяцев"),
+    "y": ("год", "года", "лет"),
+    "yr": ("год", "года", "лет"),
+}
+COUNT_NOUNS: Dict[str, Tuple[str, str, str]] = {
+    "upvote": ("голос", "голоса", "голосов"),
+    "vote": ("голос", "голоса", "голосов"),
+    "comment": ("комментарий", "комментария", "комментариев"),
+    "member": ("участник", "участника", "участников"),
+    "view": ("просмотр", "просмотра", "просмотров"),
+    "reply": ("ответ", "ответа", "ответов"),
+}
+AGO_REGEX = re.compile(r"(\d+)\s*(s|sec|m|min|h|hr|d|w|mo|y|yr)s?\s+ago", re.IGNORECASE)
+COUNT_REGEX = re.compile(r"([\d.,]+[kKmM]?)\s+([a-zA-Z]+)")
+
+
+def _singular(noun: str) -> str:
+    noun = noun.lower()
+    if noun.endswith("ies"):
+        return noun[:-3] + "y"
+    return noun[:-1] if noun.endswith("s") else noun
+
+
+def translate_ui_pattern(text: str) -> Optional[str]:
+    """Перевод счётчиков и «N ago» без модели; None, если текст не похож на шаблон."""
+    match = AGO_REGEX.fullmatch(text.strip())
+    if match:
+        count = int(match.group(1))
+        unit = AGO_UNITS[match.group(2).lower()]
+        return f"{count} {russian_plural(count, *unit)} назад"
+    match = COUNT_REGEX.fullmatch(text.strip())
+    if match and _singular(match.group(2)) in COUNT_NOUNS:
+        number = match.group(1)
+        digits = number.replace(",", "").replace(".", "")
+        # «1.2k» — дробное число тысяч: «голосов», как у любого большого числа.
+        count = int(digits) if digits.isdigit() and number[-1].isdigit() else 5
+        return f"{number} {russian_plural(count, *COUNT_NOUNS[_singular(match.group(2))])}"
+    return None

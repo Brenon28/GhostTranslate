@@ -56,11 +56,19 @@ TRANSLATE_CHUNK_BLOCKS = 16
 # Предел на кадр: экран кода или чата даёт сотни строк, и перевод всех занял бы секунды.
 MAX_BLOCKS_PER_FRAME = 150
 MIN_OCR_SCORE = 0.42
-FONT_HEIGHT_RATIO = 0.78
+# Кегль перевода к оценённому кеглю оригинала (models.RawWordBox.font_px).
+FONT_HEIGHT_RATIO = 1.0
+# Мельче этого перевод не ужимается: длинный русский текст лучше растянуть вниз.
+MIN_READABLE_FONT_PX = 12
 
 # Пункт 1.2 ТЗ v3.0: Строгий порог горизонтальной склейки (0.55 * h_avg) и вертикальной (0.75 * h_avg)
 MERGE_HORIZ_FACTOR = 0.55
 MERGE_VERT_FACTOR = 0.75
+# Строку WinOCR режет только пробел шире высоты строки: так стоят кнопки меню, а не слова фразы.
+MERGE_LINE_GAP_FACTOR = 1.0
+
+# Кадр для WinOCR увеличивается: на мелком тексте сайтов без этого пропадают слова.
+WINOCR_UPSCALE = 1.5
 
 RAPIDOCR_MAX_SIDE = 1400
 RAPIDOCR_DOWNSCALE = 0.65

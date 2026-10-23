@@ -39,9 +39,10 @@ from .config import (
     TRANSLATION_ENGINE,
     WATCHDOG_DIFF_THRESHOLD,
     WATCHDOG_INTERVAL_MS,
+    WINOCR_UPSCALE,
 )
 from .diagnostics import log_event, record_benchmark
-from .game_dict import GAME_UI_DICT
+from .game_dict import GAME_UI_DICT, translate_ui_pattern
 from .models import OverlayBlock, RawWordBox
 from .ocr.imaging import compute_small_gray_numpy, downscale_bgr_via_qimage, sample_word_background_and_fg
 from .ocr.layout import drop_words_over_russian, is_valid_english_box, merge_ocr_boxes_into_paragraphs
@@ -62,6 +63,22 @@ def _has_ocr_language(prefix: str) -> bool:
 # Русский пакет OCR ставится вместе с русским языком Windows. Он нужен, чтобы отличить
 # русский текст на экране от мусора, который из него делает английский распознаватель.
 HAS_RU_WINOCR = _has_ocr_language("ru")
+
+
+def _winocr_max_side() -> int:
+    try:
+        return int(OcrEngine.max_image_dimension)
+    except Exception:
+        return 10000
+
+
+WINOCR_MAX_SIDE = _winocr_max_side() if OcrEngine is not None else 10000
+
+
+def winocr_upscale_for(width: int, height: int) -> float:
+    """Мелкий текст сайтов (10-13 px) WinOCR теряет целыми словами; в 1.5 раза крупнее — читает."""
+    longest = max(1, width, height)
+    return max(1.0, min(WINOCR_UPSCALE, WINOCR_MAX_SIDE / float(longest)))
 
 
 # ==============================================================================
@@ -94,20 +111,20 @@ class OcrWorkerThread(QThread):
         self.cyrillic_dropped = 0
 
     @staticmethod
-    def _winocr_lines(res) -> List[List[RawWordBox]]:
+    def _winocr_lines(res, scale: float = 1.0) -> List[List[RawWordBox]]:
         lines: List[List[RawWordBox]] = []
-        for line in getattr(res, "lines", []):
+        for line_id, line in enumerate(getattr(res, "lines", [])):
             boxes: List[RawWordBox] = []
             for word in getattr(line, "words", []):
                 txt = getattr(word, "text", "").strip()
                 rect = getattr(word, "bounding_rect", None)
                 if not txt or rect is None:
                     continue
-                x1 = int(rect.x)
-                y1 = int(rect.y)
-                x2 = int(rect.x + rect.width)
-                y2 = int(rect.y + rect.height)
-                boxes.append(RawWordBox(x1=x1, y1=y1, x2=x2, y2=y2, text=txt, score=0.95))
+                x1 = int(round(rect.x / scale))
+                y1 = int(round(rect.y / scale))
+                x2 = int(round((rect.x + rect.width) / scale))
+                y2 = int(round((rect.y + rect.height) / scale))
+                boxes.append(RawWordBox(x1=x1, y1=y1, x2=x2, y2=y2, text=txt, score=0.95, line_id=line_id))
             if boxes:
                 lines.append(boxes)
         return lines
@@ -119,6 +136,13 @@ class OcrWorkerThread(QThread):
         """
         img_rgb = self.img_bgra[:, :, :3][:, :, ::-1]
         pil_img = Image.fromarray(img_rgb)
+        scale = winocr_upscale_for(pil_img.width, pil_img.height)
+        if scale > 1.0:
+            pil_img = pil_img.resize(
+                (int(round(pil_img.width * scale)), int(round(pil_img.height * scale))),
+                Image.Resampling.BICUBIC,
+            )
+            self.applied_scale = scale
 
         async def _recognize():
             if not HAS_RU_WINOCR:
@@ -127,10 +151,10 @@ class OcrWorkerThread(QThread):
             return await asyncio.gather(winocr.recognize_pil(pil_img, "en"), winocr.recognize_pil(pil_img, "ru"))
 
         en_res, ru_res = asyncio.run(_recognize())
-        raw_boxes = [word for line in self._winocr_lines(en_res) for word in line]
+        raw_boxes = [word for line in self._winocr_lines(en_res, scale) for word in line]
         if ru_res is not None:
             raw_boxes, self.cyrillic_dropped = drop_words_over_russian(
-                raw_boxes, self._winocr_lines(ru_res), NATIVE_CT2.word_score
+                raw_boxes, self._winocr_lines(ru_res, scale), NATIVE_CT2.word_score
             )
         return raw_boxes
 
@@ -242,6 +266,8 @@ class OcrWorkerThread(QThread):
                 dict_val = GAME_UI_DICT[low_key]
                 cached = dict_val.upper() if (cleaned_key.isupper() and len(cleaned_key.split()) <= 3) else dict_val
                 self.lru_cache.put(mb.text, cached)
+            if cached is None:
+                cached = translate_ui_pattern(cleaned_key)
 
             blocks.append(
                 OverlayBlock(
@@ -253,13 +279,14 @@ class OcrWorkerThread(QThread):
                     fg_color=fg_color,
                     lines_merged=mb.lines_merged,
                     is_pending=(cached is None),
+                    font_px=int(round(mb.font_px / self.dpi_scale)),
                 )
             )
             orig_lines.append(mb.text)
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         record_benchmark(used_backend, elapsed_ms)
-        scale_info = f" scale={self.applied_scale:.2f}" if self.applied_scale < 1.0 else ""
+        scale_info = f" scale={self.applied_scale:.2f}" if self.applied_scale != 1.0 else ""
         cap_info = f", из {capped_from} оставлены крупнейшие" if capped_from else ""
         log_event(
             f"[OCR_BENCHMARK] backend={used_backend}{scale_info} job=#{self.job_id} time={elapsed_ms} мс | "

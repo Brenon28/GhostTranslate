@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 from PyQt6.QtCore import QRect
 from PyQt6.QtGui import QColor
@@ -17,6 +18,12 @@ class RawWordBox:
     score: float
     lines_merged: int = 1
     split_from_bullet: bool = False
+    # Перед словом стоял отдельный разделитель меню («STORE | PROFILE»).
+    break_before: bool = False
+    # Номер строки в ответе OCR: WinOCR сам знает, какие слова стоят в одной строке.
+    line_id: Optional[int] = None
+    # Оценка кегля исходного текста по высоте рамок слов; 0 — неизвестен.
+    font_px: float = 0.0
 
     @property
     def width(self) -> int:
@@ -41,5 +48,7 @@ class OverlayBlock:
     fg_color: QColor
     lines_merged: int = 1
     is_pending: bool = True
+    # Кегль исходного текста в логических пикселях; 0 — неизвестен.
+    font_px: int = 0
     # Показан исходный текст вместо перевода: повторить, когда модель будет готова.
     is_fallback: bool = False

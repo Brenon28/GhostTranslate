@@ -3,21 +3,34 @@
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QRect
-
-from ..config import MERGE_HORIZ_FACTOR, MERGE_VERT_FACTOR
+from ..config import MERGE_HORIZ_FACTOR, MERGE_LINE_GAP_FACTOR, MERGE_VERT_FACTOR
 from ..models import RawWordBox
 
 
 LATIN_REGEX = re.compile(r"[a-zA-Z]{2,}")
-BULLET_SPLIT_REGEX = re.compile(r"\s*[•·|/»—]+\s*")
-HAS_BULLET_REGEX = re.compile(r"[•·|/»—]")
+# «/» внутри слова — это «EA/DICE» или «r/Battlefield6», а не разделитель меню.
+BULLET_SPLIT_REGEX = re.compile(r"\s*[•·|»—]+\s*")
+HAS_BULLET_REGEX = re.compile(r"[•·|»—]")
+# Ники, сабреддиты, ссылки и имена вроде «Battlefield6»: перевод их только портит.
+IDENTIFIER_REGEX = re.compile(
+    r"(?:[rRuU]/\S+|[@#]\S+|\S*_\S*|https?://\S+|www\.\S+|\S+\.(?:com|net|org|io|gg|tv|ru|pl)\b\S*"
+    r"|(?=[^\s]*\d)(?=[^\s]*[A-Za-z])[A-Za-z0-9]+)"
+)
+
+
+def is_identifier_token(token: str) -> bool:
+    core = token.strip(".,:;!?()[]\"'«»")
+    return bool(core) and IDENTIFIER_REGEX.fullmatch(core) is not None
 
 
 def is_valid_english_box(text: str) -> bool:
     if not text or len(text.strip()) < 2:
         return False
-    payload = text.split(":", 1)[-1].strip() if ":" in text else text.strip()
+    if all(is_identifier_token(token) for token in text.split()):
+        return False
+    # «Ресурс: Wood» проверяется по значению; абзац, кончающийся двоеточием, — целиком.
+    after_colon = text.split(":", 1)[-1].strip() if ":" in text else ""
+    payload = after_colon if len(after_colon) >= 2 else text.strip()
     if len(payload) < 2:
         return False
 
@@ -39,6 +52,8 @@ def is_valid_english_box(text: str) -> bool:
 WORD_EDGE_PUNCT = "'\"«»“”„.,:;!?()[]{}•·_-—…/\\|*"
 RUSSIAN_WORD_REGEX = re.compile(r"[а-яё]+(?:-[а-яё]+)*")
 CASE_FLIP_REGEX = re.compile(r"[a-z][A-Z]")
+# «3mo», «24h», «1.2k», «2nd»: число с единицей — обычный английский текст, а не мусор OCR.
+NUMBER_WITH_UNIT_REGEX = re.compile(r"\d+(?:[.,]\d+)?(?:[a-zA-Z]{1,3})")
 # Насколько русское прочтение должно быть правдоподобнее английского (лог-вероятность на букву).
 RUSSIAN_SCORE_MARGIN = 0.3
 RUSSIAN_LINE_SHARE = 0.5
@@ -60,6 +75,8 @@ def looks_like_garbled_latin(text: str) -> bool:
     """Так английский OCR пишет русские слова: «6ar'-1», «cnpaBhTb», «nanKa»."""
     core = _word_core(text)
     if not core or not any(ch.isalpha() for ch in core):
+        return False
+    if NUMBER_WITH_UNIT_REGEX.fullmatch(core):
         return False
     if any(ch.isdigit() for ch in core) or any(ch in "'\"`" for ch in core):
         return True
@@ -146,13 +163,20 @@ def _split_bullet_tokens(raw_word_boxes: List[RawWordBox]) -> List[RawWordBox]:
         return []
 
     split_result: List[RawWordBox] = []
+    separator_line: Optional[int] = None
     for box in raw_word_boxes:
         raw_txt = (box.text or "").strip()
         if not raw_txt:
             continue
         cleaned = raw_txt.strip("•·|/»— ").strip()
         if not cleaned:
+            # Разделитель отдельным словом: слово после него начинает новый пункт меню.
+            if box.line_id is not None:
+                separator_line = box.line_id
             continue
+        if separator_line is not None and box.line_id == separator_line:
+            box.break_before = True
+        separator_line = None
 
         if not HAS_BULLET_REGEX.search(cleaned):
             box.text = cleaned
@@ -190,6 +214,8 @@ def _split_bullet_tokens(raw_word_boxes: List[RawWordBox]) -> List[RawWordBox]:
                     score=box.score,
                     lines_merged=1,
                     split_from_bullet=(idx > 0),
+                    break_before=box.break_before or idx > 0,
+                    line_id=box.line_id,
                 )
             )
     return split_result
@@ -204,13 +230,95 @@ def _boxes_share_text_line(a: RawWordBox, b: RawWordBox) -> bool:
     return overlap_y > 0.50 * h_avg and height_ratio <= 1.40
 
 
+# Доли кегля, которые занимает рамка слова: «are» — только высота строчных, «lobbies» — с верхним
+# выносным элементом, «playing» — с обоими. Без этого строка «- bot lobbies» казалась мельче соседних.
+ASCENDER_CHARS = frozenset("bdfhklABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+MID_ASCENDER_CHARS = frozenset("tij")
+DESCENDER_CHARS = frozenset("gjpqy")
+X_HEIGHT_SHARE = 0.5
+MID_ASCENDER_SHARE = 0.62
+ASCENDER_SHARE = 0.72
+DESCENDER_SHARE = 0.21
+
+
+def word_height_share(text: str) -> Optional[float]:
+    letters = [ch for ch in text if ch.isascii() and ch.isalnum()]
+    if not letters:
+        return None
+    if any(ch in ASCENDER_CHARS for ch in letters):
+        top = ASCENDER_SHARE
+    elif any(ch in MID_ASCENDER_CHARS for ch in letters):
+        top = MID_ASCENDER_SHARE
+    else:
+        top = X_HEIGHT_SHARE
+    bottom = DESCENDER_SHARE if any(ch in DESCENDER_CHARS for ch in letters) else 0.0
+    return top + bottom
+
+
+def estimate_font_px(words: List[RawWordBox]) -> float:
+    """Кегль текста по рамкам слов: медиана, чтобы одно криво обрезанное слово не сбивало размер.
+
+    Однобуквенные слова не учитываются, если есть другие: так OCR читает значки
+    у кнопок («a Award», «D Reply»), и рамка значка в разы выше строчной «a».
+    """
+    measured = [word for word in words if len(word.text.strip()) > 1] or words
+    estimates = []
+    for word in measured:
+        share = word_height_share(word.text)
+        if share is not None and word.height >= 3:
+            estimates.append(word.height / share)
+    if not estimates:
+        return max(word.height for word in words) if words else 0.0
+    estimates.sort()
+    return estimates[(len(estimates) - 1) // 2]
+
+
+def _split_ocr_line(line: List[RawWordBox]) -> List[List[RawWordBox]]:
+    """Строка WinOCR рвётся только там, где стоят отдельные пункты меню.
+
+    Порог считается от высоты всей строки, а не соседних слов: рамка «as» или «on»
+    ниже рамки «Bots,» почти вдвое, и по ней обычный пробел выглядел бы разрывом.
+    """
+    line = sorted(line, key=lambda word: word.x1)
+    line_h = max(word.height for word in line)
+    groups: List[List[RawWordBox]] = []
+    current: List[RawWordBox] = [line[0]]
+    for word in line[1:]:
+        prev = current[-1]
+        gap = word.x1 - prev.x2
+        blocked = prev.split_from_bullet or word.split_from_bullet or word.break_before
+        if (not blocked) and -line_h <= gap <= MERGE_LINE_GAP_FACTOR * line_h:
+            current.append(word)
+        else:
+            groups.append(current)
+            current = [word]
+    groups.append(current)
+    return groups
+
+
 def _cluster_words_into_lines(words: List[RawWordBox]) -> List[List[RawWordBox]]:
     """Склеивает слова одной строки независимо от порядка, в котором их вернул OCR.
 
-    Раньше слово присоединялось только справа от уже собранной строки. Если у левого
-    слова y был на пиксель больше, оно обрабатывалось позже и оставалось отдельной плашкой.
+    Слова с номером строки OCR группируются по нему. Для остальных строка угадывается
+    по перекрытию по высоте: левое слово с y на пиксель больше не должно отрываться.
     """
     usable = [word for word in words if word.text and word.text.strip()]
+    ocr_lines: Dict[int, List[RawWordBox]] = {}
+    loose: List[RawWordBox] = []
+    for word in usable:
+        if word.line_id is None:
+            loose.append(word)
+        else:
+            ocr_lines.setdefault(word.line_id, []).append(word)
+    groups: List[List[RawWordBox]] = []
+    for line in ocr_lines.values():
+        groups.extend(_split_ocr_line(line))
+    return groups + _cluster_loose_words(loose)
+
+
+def _cluster_loose_words(usable: List[RawWordBox]) -> List[List[RawWordBox]]:
+    if not usable:
+        return []
     usable.sort(key=lambda word: ((word.y1 + word.y2) / 2.0, word.x1))
     bands: List[List[RawWordBox]] = []
     for word in usable:
@@ -239,13 +347,6 @@ def _cluster_words_into_lines(words: List[RawWordBox]) -> List[List[RawWordBox]]
                 current = [word]
         groups.append(current)
     return groups
-
-
-def place_plaque_around(anchor: QRect, width: int, height: int) -> QRect:
-    """Плашка шире перевода остаётся по центру исходного слова, а не уезжает вправо."""
-    rect = QRect(0, 0, max(1, int(width)), max(1, int(height)))
-    rect.moveCenter(anchor.center())
-    return rect
 
 
 def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWordBox]:
@@ -281,6 +382,7 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
                 text=" ".join(w.text.strip() for w in line if w.text.strip()),
                 score=min(w.score for w in line),
                 lines_merged=1,
+                font_px=estimate_font_px(line),
             )
         )
 
@@ -330,6 +432,7 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
     for para in para_clusters:
         para.sort(key=lambda l: (l.y1, l.x1))
         full_text = " ".join(l.text.strip() for l in para if l.text.strip())
+        sizes = sorted(l.font_px for l in para)
         final_paragraphs.append(
             RawWordBox(
                 x1=min(l.x1 for l in para),
@@ -339,6 +442,7 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
                 text=full_text,
                 score=min(l.score for l in para),
                 lines_merged=len(para),
+                font_px=sizes[len(sizes) // 2],
             )
         )
 

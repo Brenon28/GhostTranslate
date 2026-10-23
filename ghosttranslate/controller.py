@@ -453,6 +453,21 @@ class GhostTranslateController(QWidget):
                 self._arm_watchdog()
             log_event(f"Оверлей и панель раскрыты обратно (Клавиша {key})")
 
+    def bring_to_front(self) -> None:
+        """Повторный запуск exe: вместо второй копии показывается эта."""
+        if self.is_hidden:
+            self.toggle_visibility()
+        else:
+            self.toolbar.show()
+            self.toolbar.raise_()
+        self.tray.showMessage(
+            f"GhostTranslate v{APP_VERSION}",
+            "Программа уже запущена, вторая копия не нужна.",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000,
+        )
+        log_event("Повторный запуск: вторая копия закрыта, показана панель этой")
+
     def clear_all_plaques(self):
         self.overlay_blocks.clear()
         self.watchdog.disarm()

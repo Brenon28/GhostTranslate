@@ -19,6 +19,8 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64
+; Мьютекс single_instance.MUTEX_NAME: установка и удаление просят закрыть запущенную программу.
+AppMutex=GhostTranslateSingleInstance
 
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"

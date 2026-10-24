@@ -1,4 +1,4 @@
-# GhostTranslate 3.4
+# GhostTranslate 3.5
 # Python 3.12, Windows 10/11 x64.
 # The shipped build used numpy 2.5.4, Qt 6.11, onnxruntime 1.31 and opencv-python 5.0.
 

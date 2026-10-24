@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple
 # ==============================================================================
 # КОНСТАНТЫ И КОНФИГУРАЦИЯ (GHOSTTRANSLATE v3.0)
 # ==============================================================================
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 TRANSLATION_ENGINE = "native-ct2:int8-lite"
 # Релизы с установщиком GhostTranslate_v<версия>_Setup.exe, из которых программа обновляется.
 UPDATE_REPO = "Brenon28/GhostTranslate"

@@ -2,7 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from PyQt6.QtCore import QRect
+from PyQt6.QtCore import QRect, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QApplication
 
@@ -91,6 +91,41 @@ class PlaqueLayoutTests(unittest.TestCase):
             self.assertGreaterEqual(lay.font.pixelSize(), MIN_READABLE_FONT_PX)
         for upper, lower in zip(lays, lays[1:]):
             self.assertFalse(upper.rect.intersects(lower.rect))
+
+    def test_chat_lines_with_long_translation_stay_in_their_rows(self):
+        # Чат игры: шаг 17 px, перевод длиннее оригинала. Раньше он переносился на вторую
+        # строку и сдвигал вниз все сообщения под ним.
+        trans = "07:39 [Р] [Ниндзюцука-Серебряный месяц]: Я должен идти по-настоящему"
+        rows = [block(58, 150 + 17 * i, 400, 19, f"msg {i}", trans, font_px=17) for i in range(6)]
+        chat = QRect(0, 0, 583, 304)
+        lays = layout_blocks(rows, FontCustomConfig(), "wrap_gradient", chat)
+        for lay in lays:
+            self.assertEqual(lay.rect.top(), lay.block.rect.top())
+            self.assertGreaterEqual(lay.font.pixelSize(), MIN_READABLE_FONT_PX)
+            self.assertLessEqual(lay.rect.right(), chat.right())
+        # Под последней строкой пусто, ей можно перенестись вниз: сдвигать там нечего.
+        for lay in lays[:-1]:
+            self.assertFalse(lay.flags & int(Qt.TextFlag.TextWordWrap))
+        for upper, lower in zip(lays, lays[1:]):
+            self.assertFalse(upper.rect.intersects(lower.rect))
+
+    def test_wrapped_chat_message_fits_its_two_rows(self):
+        message = block(58, 83, 467, 36, "still too less people", "07:39 [Р] [Шурли-Блэкрок]: ещё меньше людей "
+                        "трахаются из-за испуганных пипов", lines=2, font_px=18)
+        below = block(58, 116, 300, 19, "next", "следующее")
+        lays = layouts_by_text([message, below])
+        self.assertLessEqual(lays["still too less people"].rect.bottom(), below.rect.top())
+        self.assertEqual(lays["next"].rect.top(), below.rect.top())
+
+    def test_widened_line_stops_before_text_of_the_next_column(self):
+        # «4mo ago» в боковой колонке стоит на 13 px ниже строки поста и соседом по строке не считается.
+        post = block(519, 471, 533, 17, "post", "Я перестал пользоваться поиском и теперь он работает " * 2,
+                     font_px=14)
+        below = block(519, 488, 533, 17, "below", "строка ниже")
+        side = block(1286, 484, 48, 16, "4mo ago", "4 месяца назад")
+        lays = layouts_by_text([post, below, side])
+        self.assertFalse(lays["post"].rect.intersects(lays["4mo ago"].rect))
+        self.assertEqual(lays["4mo ago"].rect.top(), side.rect.top())
 
     def test_single_line_style_never_wraps(self):
         line = block(10, 10, 200, 20, "orig", "очень длинный перевод " * 20)

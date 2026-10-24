@@ -121,7 +121,7 @@ class RapidWordTests(unittest.TestCase):
         self.assertEqual((words[0].x1, words[0].y1, words[0].x2, words[0].y2), (5, 6, 80, 30))
 
     def test_inflated_lines_merge_into_paragraph_after_ink_trim(self):
-        # Рамки строк перекрываются на 12 px — без поджима до чернил абзац не собирается.
+        # Рамки строк перекрываются на 12 px; после поджима до чернил строки стоят друг под другом.
         image = np.full((80, 200, 3), 255, np.uint8)
         image[18:31, 10:70] = 0
         image[18:31, 80:130] = 0
@@ -133,7 +133,6 @@ class RapidWordTests(unittest.TestCase):
         ]
         raw = rapidocr_items_to_word_boxes(items)
         self.assertLess(raw[2].y1 - raw[0].y2, -4)
-        self.assertEqual(len(merge_ocr_boxes_into_paragraphs(raw)), 2)
 
         words = rapidocr_to_word_boxes(items, image)
         self.assertEqual((words[0].y1, words[0].y2), (18, 31))

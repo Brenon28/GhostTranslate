@@ -122,6 +122,28 @@ class OcrLineTests(unittest.TestCase):
         texts = sorted(item.text for item in merge_ocr_boxes_into_paragraphs(words))
         self.assertEqual(texts, ["NOTES TO THE FINANCIAL", "STATEMENT V: Statement of Comparison"])
 
+    def test_chat_messages_split_on_timestamp_and_keep_their_wrap(self):
+        # Чат WoW: шаг строк 17 px; второе сообщение перенесено на следующую строку.
+        words = ocr_line(0, 151, [(58, 40, 13, "07:39"), (102, 25, 13, "[R]"), (131, 60, 13, "[Fist]:"),
+                                  (195, 50, 13, "seems"), (250, 30, 13, "like")])
+        words += ocr_line(1, 168, [(58, 40, 13, "07:39"), (102, 25, 13, "[R]"), (131, 60, 13, "[Shuurly]:"),
+                                   (195, 30, 13, "still"), (230, 30, 13, "too"), (265, 30, 13, "less")])
+        words += ocr_line(2, 185, [(72, 40, 13, "about"), (117, 50, 13, "feared"), (172, 40, 13, "peeps")])
+        words += ocr_line(3, 202, [(58, 40, 13, "[07:40]"), (102, 50, 13, "Sorry"), (157, 40, 13, "guys")])
+        texts = [p.text for p in sorted(merge_ocr_boxes_into_paragraphs(words), key=lambda p: p.y1)]
+        self.assertEqual(texts, [
+            "07:39 [R] [Fist]: seems like",
+            "07:39 [R] [Shuurly]: still too less about feared peeps",
+            "[07:40] Sorry guys",
+        ])
+
+    def test_overlapping_rapidocr_lines_still_form_a_paragraph(self):
+        # Рамки RapidOCR у текста с обводкой: 22 px при шаге строк 16 px.
+        words = [box(57, 81, 60, 22, "still"), box(122, 81, 40, 22, "too"), box(167, 81, 40, 22, "less"),
+                 box(72, 97, 50, 22, "about"), box(127, 97, 55, 22, "feared")]
+        texts = [p.text for p in merge_ocr_boxes_into_paragraphs(words)]
+        self.assertEqual(texts, ["still too less about feared"])
+
     def test_sentence_starting_with_pronoun_i_continues_the_paragraph(self):
         words = ocr_line(0, 196, [(967, 40, 13, "When"), (1012, 60, 10, "playing"), (1077, 25, 13, "the")])
         words += ocr_line(1, 216, [(967, 38, 13, "Then"), (1010, 4, 13, "I"), (1019, 36, 13, "went")])
@@ -165,6 +187,8 @@ WORD_SCORES = {
     "ece": -6.11, "все": -2.42,
     "plan": -2.38, "тап": -6.16,
     "oner": -3.32, "олег": -4.29,
+    "kpviyvit": -6.0, "кричит": -2.5,
+    "mto": -5.5, "что": -1.8,
 }
 
 
@@ -199,6 +223,29 @@ class RussianFilterTests(unittest.TestCase):
         kept, dropped = drop_words_over_russian(english, russian_lines, WORD_SCORES.get)
         self.assertEqual([w.text for w in kept], ["name", "errors"])
         self.assertEqual(dropped, 3)
+
+    def test_timestamp_does_not_outvote_russian_chat_line(self):
+        # Строка крика NPC в чате WoW: «07:39 Зул'джан кричит: Вы не остановите то, что грядет.»
+        en_ru = [("07:39", "07:39"), ("3yn'AMaH", "Зул'джан"), ("KPVIYVIT:", "кричит:"), ("Bbl", "Вы"),
+                 ("He", "не"), ("OCTaHOBMTe", "остановите"), ("TO,", "то,"), ("MTO", "что"), ("rpqaeT.", "грядет.")]
+        english, russian = [], []
+        for i, (en, ru) in enumerate(en_ru):
+            english.append(box(10 + 60 * i, 10, 50, 14, en))
+            russian.append(box(10 + 60 * i, 10, 50, 14, ru))
+        badge = box(10, 60, 10, 14, "2")
+        kept, _ = drop_words_over_russian(english + [badge], [russian, [box(10, 60, 10, 14, "2")]], WORD_SCORES.get)
+        self.assertEqual([w.text for w in kept], ["2"])
+
+    def test_english_message_after_russian_nickname_stays(self):
+        # Русский OCR Windows читает латиницу латиницей: одинаковое прочтение — голос за английский.
+        en_ru = [("07:39", "07:39"), ("[Xo3eby", "[Хозевул-ВечнаяПесня]"), ("-BeyHaa", "[Хозевул-ВечнаяПесня]"),
+                 ("someone", "someone"), ("didn't", "didn't"), ("know", "know"), ("how", "how")]
+        english, russian = [], []
+        for i, (en, ru) in enumerate(en_ru):
+            english.append(box(10 + 60 * i, 10, 50, 14, en))
+            russian.append(box(10 + 60 * i, 10, 50, 14, ru))
+        kept, _ = drop_words_over_russian(english, [russian], WORD_SCORES.get)
+        self.assertEqual([w.text for w in kept], ["07:39", "someone", "didn't", "know", "how"])
 
     def test_without_russian_ocr_nothing_is_dropped(self):
         english = [box(10, 10, 60, 20, "Open")]

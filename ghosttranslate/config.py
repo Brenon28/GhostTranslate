@@ -8,8 +8,12 @@ from typing import Dict, List, Tuple
 # ==============================================================================
 # КОНСТАНТЫ И КОНФИГУРАЦИЯ (GHOSTTRANSLATE v3.0)
 # ==============================================================================
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 TRANSLATION_ENGINE = "native-ct2:int8-lite"
+# Релизы с установщиком GhostTranslate_v<версия>_Setup.exe, из которых программа обновляется.
+UPDATE_REPO = "Brenon28/GhostTranslate"
+# Проверка после запуска, когда модель перевода уже грузится и панель на экране.
+UPDATE_CHECK_DELAY_MS = 8000
 DEFAULT_OCR_BACKEND = "WinOCR"
 DEFAULT_RENDER_STYLE = "wrap_gradient"
 
@@ -129,4 +133,7 @@ SETTINGS_FILE_PATH = os.path.join(DATA_DIR, "settings.json")
 LEGACY_SETTINGS_FILE_PATH = os.path.join(BASE_DIR, "settings.json")
 # Английская модель распознавания (95 символов) вместо китайской (6625): на 20% быстрее
 # и не склеивает слова в заголовках PDF. Нет файла — RapidOCR берёт свою китайскую.
-RAPIDOCR_REC_MODEL_PATH = os.path.join(BASE_DIR, "rapidocr_models", RAPIDOCR_REC_MODEL_FILE)
+# Сборка PyInstaller кладёт папку в _internal (sys._MEIPASS), исходники — в корень проекта.
+RAPIDOCR_REC_MODEL_PATH = os.path.join(
+    getattr(sys, "_MEIPASS", BASE_DIR), "rapidocr_models", RAPIDOCR_REC_MODEL_FILE
+)

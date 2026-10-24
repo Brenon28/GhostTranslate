@@ -11,7 +11,7 @@ import win32gui
 import win32process
 from PyQt6.QtCore import QRect, Qt, QThread, QTimer
 from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QPixmap, QScreen
-from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
+from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QProgressDialog, QSystemTrayIcon, QWidget
 
 from .config import (
     APP_VERSION,
@@ -31,6 +31,7 @@ from .config import (
     SEQ_MATCH_THRESHOLD,
     TRANSLATE_CHUNK_BLOCKS,
     TRANSLATION_ENGINE,
+    UPDATE_CHECK_DELAY_MS,
     VK_ESCAPE,
     WATCHDOG_PADDING_PX,
     WM_HOTKEY,
@@ -57,6 +58,14 @@ from .ui.overlay import ScreenOverlay
 from .ui.pill import MiniRestorePill
 from .ui.snip import SNIP_HIDE_SETTLE_MS, SnipOverlay
 from .ui.toolbar import FloatingToolbar
+from .updater import (
+    ReleaseInfo,
+    UpdateCheckThread,
+    UpdateDownloadThread,
+    can_self_update,
+    is_newer,
+    launch_installer,
+)
 from .win32 import apply_capture_affinity, is_user_admin, native_window_rect, set_hide_from_capture, user32
 from .workers import (
     HAS_RAPIDOCR,
@@ -183,6 +192,12 @@ class GhostTranslateController(QWidget):
         for screen in QApplication.screens():
             self._add_overlay(screen)
 
+        self._update_release: Optional[ReleaseInfo] = None
+        self._update_check_thread: Optional[UpdateCheckThread] = None
+        self._update_check_manual = False
+        self._update_download: Optional[UpdateDownloadThread] = None
+        self._update_progress: Optional[QProgressDialog] = None
+        self._tray_message_kind = ""
         self._init_tray_icon()
         self.hotkey_toggle: Hotkey = parse_hotkey(self.font_cfg.hotkey_toggle)
         self.hotkey_snip: Hotkey = parse_hotkey(self.font_cfg.hotkey_snip)
@@ -201,6 +216,8 @@ class GhostTranslateController(QWidget):
         )
         if self.font_cfg.sound_enabled:
             play_startup_sound()
+        if self.font_cfg.check_updates:
+            QTimer.singleShot(UPDATE_CHECK_DELAY_MS, self.check_for_updates)
 
     def _init_tray_icon(self):
         pix = QPixmap(16, 16)
@@ -219,6 +236,12 @@ class GhostTranslateController(QWidget):
         act_stop.triggered.connect(self.stop_translation_and_clear)
         act_logs = QAction("Открыть журнал и бенчмарк", self)
         act_logs.triggered.connect(self.show_logs_modal)
+        self.tray_act_update = QAction("Проверить обновления", self)
+        self.tray_act_update.triggered.connect(self._on_update_action)
+        act_auto_update = QAction("Проверять обновления при запуске", self)
+        act_auto_update.setCheckable(True)
+        act_auto_update.setChecked(self.font_cfg.check_updates)
+        act_auto_update.toggled.connect(self._set_check_updates)
         act_exit = QAction("Полный выход [X]", self)
         act_exit.triggered.connect(self.emergency_shutdown)
         menu.addAction(act_full)
@@ -228,9 +251,159 @@ class GhostTranslateController(QWidget):
         menu.addAction(act_stop)
         menu.addAction(act_logs)
         menu.addSeparator()
+        menu.addAction(self.tray_act_update)
+        menu.addAction(act_auto_update)
+        menu.addSeparator()
         menu.addAction(act_exit)
         self.tray.setContextMenu(menu)
+        self.tray.messageClicked.connect(self._on_tray_message_clicked)
         self.tray.show()
+
+    def _show_tray_message(
+        self,
+        title: str,
+        text: str,
+        icon: QSystemTrayIcon.MessageIcon = QSystemTrayIcon.MessageIcon.Information,
+        kind: str = "",
+        timeout_ms: int = 3000,
+    ) -> None:
+        # Сигнал messageClicked у всех уведомлений общий; kind говорит, на какое из них нажали.
+        self._tray_message_kind = kind
+        self.tray.showMessage(title, text, icon, timeout_ms)
+
+    def _on_tray_message_clicked(self) -> None:
+        if self._tray_message_kind == "update":
+            self.offer_update()
+
+    # ------------------------------------------------------------------ обновления
+    def _set_check_updates(self, enabled: bool) -> None:
+        self.font_cfg.check_updates = enabled
+        self.font_cfg.save()
+
+    def _on_update_action(self) -> None:
+        if self._update_release is not None:
+            self.offer_update()
+        else:
+            self.check_for_updates(manual=True)
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        if self._update_check_thread is not None or self._update_download is not None:
+            return
+        self._update_check_manual = manual
+        thread = UpdateCheckThread()
+        thread.checked.connect(self._on_update_checked)
+        self._update_check_thread = thread
+        self._track_thread(thread)
+        thread.start()
+
+    def _on_update_checked(self, release: Optional[ReleaseInfo], error: str) -> None:
+        self._update_check_thread = None
+        manual = self._update_check_manual
+        if error:
+            log_event(f"Проверка обновлений не удалась: {error}", "WARN")
+            if manual:
+                self._show_tray_message(
+                    "Проверка обновлений", f"Не удалось связаться с GitHub: {error}",
+                    QSystemTrayIcon.MessageIcon.Warning,
+                )
+            return
+        if release is None or not is_newer(release.version):
+            latest = f"v{release.version}" if release else "релиз без установщика"
+            log_event(f"Обновлений нет: установлена v{APP_VERSION}, последний релиз {latest}")
+            if manual:
+                self._show_tray_message("Проверка обновлений", f"У вас последняя версия: v{APP_VERSION}.")
+            return
+        self._update_release = release
+        self.tray_act_update.setText(f"Обновить до v{release.version}")
+        log_event(f"Доступно обновление v{release.version}: {release.asset_name}, "
+                  f"{release.asset_size / (1024 * 1024):.0f} МБ, sha256={'есть' if release.sha256 else 'нет'}")
+        if manual:
+            self.offer_update()
+        else:
+            self._show_tray_message(
+                f"Доступна GhostTranslate v{release.version}",
+                "Нажмите на это уведомление или выберите «Обновить» в меню значка.",
+                kind="update",
+                timeout_ms=10000,
+            )
+
+    def offer_update(self) -> None:
+        release = self._update_release
+        if release is None or self._update_download is not None:
+            return
+        box = QMessageBox()
+        box.setWindowTitle(f"GhostTranslate v{APP_VERSION}")
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"Доступна версия {release.version}. Скачать установщик "
+                    f"({release.asset_size / (1024 * 1024):.0f} МБ) и обновиться?")
+        box.setInformativeText("Программа закроется, установка пройдёт сама и запустит новую версию. "
+                               "Настройки сохранятся.")
+        notes = release.notes.strip()
+        if notes:
+            box.setDetailedText(notes)
+        update_button = box.addButton("Обновить", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Позже", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not update_button:
+            return
+        if not can_self_update():
+            QMessageBox.information(
+                None, f"GhostTranslate v{APP_VERSION}",
+                "Программа запущена из исходников: обновите её через git pull. "
+                "Установщик ставится только поверх собранной версии.",
+            )
+            return
+        self._start_update_download(release)
+
+    def _start_update_download(self, release: ReleaseInfo) -> None:
+        thread = UpdateDownloadThread(release)
+        dialog = QProgressDialog(f"Загрузка GhostTranslate v{release.version}...", "Отмена", 0, 100)
+        dialog.setWindowTitle(f"GhostTranslate v{APP_VERSION}")
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(thread.requestInterruption)
+        thread.progress.connect(self._on_update_progress)
+        thread.done.connect(self._on_update_downloaded)
+        self._update_download = thread
+        self._update_progress = dialog
+        self._track_thread(thread)
+        log_event(f"Загрузка обновления v{release.version}: {release.asset_url}")
+        dialog.show()
+        thread.start()
+
+    def _on_update_progress(self, received: int, total: int) -> None:
+        if self._update_progress is None or total <= 0:
+            return
+        self._update_progress.setValue(min(100, received * 100 // total))
+        self._update_progress.setLabelText(
+            f"Загрузка GhostTranslate v{self._update_release.version}: "
+            f"{received / (1024 * 1024):.0f} из {total / (1024 * 1024):.0f} МБ"
+        )
+
+    def _on_update_downloaded(self, path: str, error: str) -> None:
+        self._update_download = None
+        if self._update_progress is not None:
+            self._update_progress.close()
+            self._update_progress = None
+        if not path:
+            if error:
+                log_event(f"Не удалось скачать обновление: {error}", "ERROR")
+                QMessageBox.warning(None, f"GhostTranslate v{APP_VERSION}", f"Не удалось скачать обновление: {error}")
+            else:
+                log_event("Загрузка обновления отменена")
+            return
+        log_event(f"Обновление скачано в {path}, запуск установщика")
+        try:
+            launch_installer(path)
+        except OSError as exc:
+            log_event(f"Установщик не запустился: {exc}", "ERROR")
+            QMessageBox.warning(None, f"GhostTranslate v{APP_VERSION}", f"Установщик не запустился: {exc}")
+            return
+        # Установщик ждёт, пока освободится мьютекс экземпляра, — выход его и освобождает.
+        self.emergency_shutdown()
 
     def _apply_hotkey_labels(self) -> None:
         toggle, snip = self.hotkey_toggle.text, self.hotkey_snip.text
@@ -464,12 +637,7 @@ class GhostTranslateController(QWidget):
         else:
             self.toolbar.show()
             self.toolbar.raise_()
-        self.tray.showMessage(
-            f"GhostTranslate v{APP_VERSION}",
-            "Программа уже запущена, вторая копия не нужна.",
-            QSystemTrayIcon.MessageIcon.Information,
-            3000,
-        )
+        self._show_tray_message(f"GhostTranslate v{APP_VERSION}", "Программа уже запущена, вторая копия не нужна.")
         log_event("Повторный запуск: вторая копия закрыта, показана панель этой")
 
     def clear_all_plaques(self):

@@ -1,16 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
 
+# У rapidocr_onnxruntime нет хука PyInstaller: config.yaml и встроенные модели берутся отсюда.
+# rapidocr_models — английская модель распознавания, её путь в config.RAPIDOCR_REC_MODEL_PATH.
+datas = collect_data_files('rapidocr_onnxruntime') + [('rapidocr_models', 'rapidocr_models')]
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'torchvision', 'torchaudio', 'argostranslate', 'stanza', 'spacy', 'cv2', 'matplotlib', 'pandas'],
+    excludes=['torch', 'torchvision', 'torchaudio', 'argostranslate', 'stanza', 'spacy', 'matplotlib', 'pandas'],
     noarchive=False,
     optimize=0,
 )

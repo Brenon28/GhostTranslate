@@ -27,6 +27,7 @@ class FontCustomConfig:
     hotkey_snip: str = DEFAULT_HOTKEY_SNIP
     # Середина верхнего края панели в логических координатах Qt; None — по центру основного экрана.
     toolbar_anchor: Optional[Tuple[int, int]] = None
+    check_updates: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -42,6 +43,7 @@ class FontCustomConfig:
             "hotkey_toggle": self.hotkey_toggle,
             "hotkey_snip": self.hotkey_snip,
             "toolbar_anchor": list(self.toolbar_anchor) if self.toolbar_anchor else None,
+            "check_updates": self.check_updates,
         }
 
     @staticmethod
@@ -79,6 +81,7 @@ class FontCustomConfig:
                     hotkey_toggle=cls._hotkey_or_default(data.get("hotkey_toggle"), DEFAULT_HOTKEY_TOGGLE),
                     hotkey_snip=cls._hotkey_or_default(data.get("hotkey_snip"), DEFAULT_HOTKEY_SNIP),
                     toolbar_anchor=cls._anchor_or_none(data.get("toolbar_anchor")),
+                    check_updates=bool(data.get("check_updates", True)),
                 )
                 if cfg.hotkey_toggle == cfg.hotkey_snip:
                     cfg.hotkey_toggle, cfg.hotkey_snip = DEFAULT_HOTKEY_TOGGLE, DEFAULT_HOTKEY_SNIP

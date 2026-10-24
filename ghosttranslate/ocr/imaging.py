@@ -41,12 +41,12 @@ def downscale_bgr_via_qimage(img_bgra: np.ndarray, scale: float) -> np.ndarray:
         ).convertToFormat(QImage.Format.Format_ARGB32)
         ptr = scaled_qimg.bits()
         ptr.setsize(new_h * new_w * 4)
-        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((new_h, new_w, 4)).copy()
-        return arr[:, :, :3]
+        # Срез без копии шёл бы с шагом 4 байта, и RapidOCR на нём заметно медленнее.
+        return np.frombuffer(ptr, dtype=np.uint8).reshape((new_h, new_w, 4))[:, :, :3].copy()
     except Exception:
         row_idx = np.linspace(0, h_orig - 1, new_h).astype(int)
         col_idx = np.linspace(0, w_orig - 1, new_w).astype(int)
-        return img_bgra[np.ix_(row_idx, col_idx)][:, :, :3]
+        return np.ascontiguousarray(img_bgra[np.ix_(row_idx, col_idx)][:, :, :3])
 
 
 def sample_word_background_and_fg(

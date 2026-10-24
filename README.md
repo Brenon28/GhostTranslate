@@ -41,6 +41,8 @@
 | rapidocr-onnxruntime | Второй OCR, если Windows OCR недоступен |
 | pyinstaller | Сборка `GhostTranslate.exe` |
 
+RapidOCR берёт английскую модель распознавания из `rapidocr_models/` (PP-OCRv4, 7 МБ, лежит в репозитории): она быстрее встроенной китайской и не склеивает слова. Если папки нет, используется встроенная модель.
+
 PyTorch, Argos Translate, Stanza и OpenCV программа не использует.
 
 ## Установка и проверка

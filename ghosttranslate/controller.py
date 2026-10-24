@@ -25,7 +25,9 @@ from .config import (
     LRU_MAX_SIZE,
     MAX_BLOCKS_PER_FRAME,
     PIXEL_DIFF_THRESHOLD,
-    RAPIDOCR_DOWNSCALE,
+    RAPIDOCR_MAX_SIDE,
+    RAPIDOCR_REC_MODEL_PATH,
+    RAPIDOCR_THREADS,
     SEQ_MATCH_THRESHOLD,
     TRANSLATE_CHUNK_BLOCKS,
     TRANSLATION_ENGINE,
@@ -61,10 +63,10 @@ from .workers import (
     HAS_RU_WINOCR,
     HAS_WINOCR,
     FrameWatchdogThread,
+    LazyRapidOCR,
     ModelLoaderThread,
     NativeCT2TranslationWorker,
     OcrWorkerThread,
-    RapidOCR,
 )
 
 # Окна оболочки Windows: по ним нельзя понять, какой монитор переводить.
@@ -117,7 +119,9 @@ class GhostTranslateController(QWidget):
         self._frame_region: Optional[Dict[str, int]] = None
         # Последнее активное окно чужой программы: «Весь экран» переводит его монитор.
         self._last_external_hwnd: int = 0
-        self.ocr_engine = RapidOCR() if HAS_RAPIDOCR else None
+        self.ocr_engine = LazyRapidOCR() if HAS_RAPIDOCR else None
+        if self.ocr_engine is not None and (self.ocr_backend == "RapidOCR" or not HAS_WINOCR):
+            self.ocr_engine.preload()
         self.lru_cache = TranslationLRUCache(LRU_MAX_SIZE)
 
         self._live_threads: List[QThread] = []
@@ -477,6 +481,8 @@ class GhostTranslateController(QWidget):
         self.ocr_backend = backend
         self.prev_ocr_signature = ""
         log_event(f"[SWITCH] Движок OCR переключен на: {backend}")
+        if backend == "RapidOCR" and self.ocr_engine is not None:
+            self.ocr_engine.preload()
         if self.overlay_blocks and not self.pipeline_busy:
             self._trigger_capture_pipeline(check_static=False)
 
@@ -539,7 +545,8 @@ class GhostTranslateController(QWidget):
             f"Translation Engine: {TRANSLATION_ENGINE} (GAME_UI_DICT={len(GAME_UI_DICT)} words, "
             f"chunk={TRANSLATE_CHUNK_BLOCKS}, max blocks per frame={MAX_BLOCKS_PER_FRAME})",
             f"Active OCR Backend: {self.ocr_backend} (HAS_WINOCR={HAS_WINOCR}, RU filter={HAS_RU_WINOCR}, "
-            f"RapidOCR downscale={RAPIDOCR_DOWNSCALE})",
+            f"RapidOCR max_side={RAPIDOCR_MAX_SIDE}, threads={RAPIDOCR_THREADS}, "
+            f"en rec model={os.path.isfile(RAPIDOCR_REC_MODEL_PATH)})",
             f"Settings ({DATA_DIR}): {self.font_cfg.to_dict()}",
             f"Global Hotkeys: {self.hotkey_toggle.text} (Hide/Restore) | {self.hotkey_snip.text} (Region Snip) | "
             f"RegisterHotKey={self._hotkeys_registered}",

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
@@ -33,8 +34,9 @@ except ImportError:
 from .config import (
     MAX_BLOCKS_PER_FRAME,
     MIN_OCR_SCORE,
-    RAPIDOCR_DOWNSCALE,
     RAPIDOCR_MAX_SIDE,
+    RAPIDOCR_REC_MODEL_PATH,
+    RAPIDOCR_THREADS,
     TRANSLATE_CHUNK_BLOCKS,
     TRANSLATION_ENGINE,
     WATCHDOG_DIFF_THRESHOLD,
@@ -46,6 +48,7 @@ from .game_dict import GAME_UI_DICT, translate_ui_pattern
 from .models import OverlayBlock, RawWordBox
 from .ocr.imaging import compute_small_gray_numpy, downscale_bgr_via_qimage, sample_word_background_and_fg
 from .ocr.layout import drop_words_over_russian, is_valid_english_box, merge_ocr_boxes_into_paragraphs
+from .ocr.rapid_layout import rapidocr_to_word_boxes
 from .screens import open_mss
 
 
@@ -73,6 +76,31 @@ def _winocr_max_side() -> int:
 
 
 WINOCR_MAX_SIDE = _winocr_max_side() if OcrEngine is not None else 10000
+
+
+class LazyRapidOCR:
+    """RapidOCR грузит две ONNX-модели около секунды. При старте с WinOCR он не нужен,
+    поэтому создаётся в потоке распознавания при первом кадре или в фоне при переключении."""
+
+    def __init__(self):
+        self._engine = None
+        self._lock = threading.Lock()
+
+    def get(self):
+        with self._lock:
+            if self._engine is None:
+                options = {"intra_op_num_threads": RAPIDOCR_THREADS}
+                if os.path.isfile(RAPIDOCR_REC_MODEL_PATH):
+                    options["rec_model_path"] = RAPIDOCR_REC_MODEL_PATH
+                else:
+                    log_event(f"Нет {RAPIDOCR_REC_MODEL_PATH} -> китайская модель распознавания RapidOCR", "WARN")
+                t0 = time.perf_counter()
+                self._engine = RapidOCR(**options)
+                log_event(f"RapidOCR загружен за {time.perf_counter() - t0:.2f} с ({RAPIDOCR_THREADS} потоков)")
+            return self._engine
+
+    def preload(self):
+        threading.Thread(target=self.get, name="RapidOCRPreload", daemon=True).start()
 
 
 def winocr_upscale_for(width: int, height: int) -> float:
@@ -163,44 +191,28 @@ class OcrWorkerThread(QThread):
             return []
         h_orig, w_orig = self.img_bgra.shape[:2]
         scale = 1.0
-
-        if max(w_orig, h_orig) > RAPIDOCR_MAX_SIDE:
-            scale = RAPIDOCR_DOWNSCALE
+        long_side = max(w_orig, h_orig)
+        if long_side > RAPIDOCR_MAX_SIDE:
+            scale = RAPIDOCR_MAX_SIDE / float(long_side)
             self.applied_scale = scale
             img_input = downscale_bgr_via_qimage(self.img_bgra, scale)
         else:
-            img_input = self.img_bgra[:, :, :3]
+            # Срез BGRA -> BGR идёт с шагом 4 байта; на таком массиве ONNX-препроцессинг
+            # медленнее в полтора раза (1.9 с против 1.2 с на кадре 1600x1000).
+            img_input = np.ascontiguousarray(self.img_bgra[:, :, :3])
 
-        ocr_result, _ = self.ocr_engine(
+        ocr_result, _ = self.ocr_engine.get()(
             img_input,
             use_det=True,
             use_cls=False,
             use_rec=True,
             box_thresh=0.35,
             unclip_ratio=1.8,
+            return_word_box=True,
         )
-        raw_boxes: List[RawWordBox] = []
-        if not ocr_result:
-            return raw_boxes
-
-        inv_scale = 1.0 / scale
-        for item in ocr_result:
-            box, text, score = item[0], item[1].strip(), float(item[2])
-            if score < MIN_OCR_SCORE or not text:
-                continue
-            xs = [pt[0] * inv_scale for pt in box]
-            ys = [pt[1] * inv_scale for pt in box]
-            raw_boxes.append(
-                RawWordBox(
-                    x1=int(round(min(xs))),
-                    y1=int(round(min(ys))),
-                    x2=int(round(max(xs))),
-                    y2=int(round(max(ys))),
-                    text=text,
-                    score=score,
-                )
-            )
-        return raw_boxes
+        # Чернила смотрим на исходном кадре: координаты слов уже пересчитаны в него.
+        words = rapidocr_to_word_boxes(ocr_result, self.img_bgra, 1.0 / scale)
+        return [word for word in words if word.score >= MIN_OCR_SCORE and word.text]
 
     def run(self):
         t0 = time.perf_counter()

@@ -74,8 +74,20 @@ JUSTIFIED_GAP_SPREAD = 1.6
 # Кадр для WinOCR увеличивается: на мелком тексте сайтов без этого пропадают слова.
 WINOCR_UPSCALE = 1.5
 
-RAPIDOCR_MAX_SIDE = 1400
-RAPIDOCR_DOWNSCALE = 0.65
+# Кадр длиннее этой стороны уменьшается перед RapidOCR пропорционально.
+# Порог совпадает с max_side_len движка. Раньше сторона больше 1400 ужималась
+# в 0.65: текст 14 px становился девятипиксельным, и слова слипались.
+RAPIDOCR_MAX_SIDE = 2000
+# Пиксель внутри рамки RapidOCR — чернила, если сумма |BGR - фон| не меньше порога.
+# Детектор раздувает рамку (unclip), и кегль по её высоте выходит около 36 px вместо 14.
+RAPIDOCR_INK_THRESHOLD = 60
+# Пробел, которого нет в тексте строки. Между рамками символов одного слова зазор
+# обычно 0–4 px, между словами на выравнивании по ширине — от 8 px.
+RAPIDOCR_WORD_GAP_PX = 8
+# Потоков ONNX Runtime на кадр. На 16-поточном процессоре шесть потоков занимают около
+# 5 ядер, четыре — около 3.5 и на 30% медленнее; остальное достаётся игре и браузеру.
+RAPIDOCR_THREADS = max(1, min(4, (os.cpu_count() or 2) // 2))
+RAPIDOCR_REC_MODEL_FILE = "en_PP-OCRv4_rec_mobile.onnx"
 
 WDA_NONE = 0x00000000
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
@@ -115,3 +127,6 @@ LOG_FILE_PATH = os.path.join(DATA_DIR, "ghost_translate.log")
 BUNDLE_FILE_PATH = os.path.join(DATA_DIR, "ghost_report_bundle.txt")
 SETTINGS_FILE_PATH = os.path.join(DATA_DIR, "settings.json")
 LEGACY_SETTINGS_FILE_PATH = os.path.join(BASE_DIR, "settings.json")
+# Английская модель распознавания (95 символов) вместо китайской (6625): на 20% быстрее
+# и не склеивает слова в заголовках PDF. Нет файла — RapidOCR берёт свою китайскую.
+RAPIDOCR_REC_MODEL_PATH = os.path.join(BASE_DIR, "rapidocr_models", RAPIDOCR_REC_MODEL_FILE)

@@ -157,11 +157,7 @@ class OcrWorkerThread(QThread):
                 lines.append(boxes)
         return lines
 
-    def _run_winocr(self) -> List[RawWordBox]:
-        """
-        Пункт 1.1 ТЗ v3.0: В WinOCR обязательно извлекаем именно отдельные слова (for word in line.words),
-        а не целую строку line целиком!
-        """
+    def _winocr_image(self) -> Tuple["Image.Image", float]:
         img_rgb = self.img_bgra[:, :, :3][:, :, ::-1]
         pil_img = Image.fromarray(img_rgb)
         scale = winocr_upscale_for(pil_img.width, pil_img.height)
@@ -170,6 +166,25 @@ class OcrWorkerThread(QThread):
                 (int(round(pil_img.width * scale)), int(round(pil_img.height * scale))),
                 Image.Resampling.BICUBIC,
             )
+        return pil_img, scale
+
+    def _russian_lines(self) -> List[List[RawWordBox]]:
+        """Русский WinOCR по тому же кадру. RapidOCR с английской моделью читает русские
+        надписи игры латиницей («noknAaet penAosyio rpynny»), и по этим строкам их видно."""
+        pil_img, scale = self._winocr_image()
+
+        async def _recognize():
+            return await winocr.recognize_pil(pil_img, "ru")
+
+        return self._winocr_lines(asyncio.run(_recognize()), scale)
+
+    def _run_winocr(self) -> List[RawWordBox]:
+        """
+        Пункт 1.1 ТЗ v3.0: В WinOCR обязательно извлекаем именно отдельные слова (for word in line.words),
+        а не целую строку line целиком!
+        """
+        pil_img, scale = self._winocr_image()
+        if scale > 1.0:
             self.applied_scale = scale
 
         async def _recognize():
@@ -212,7 +227,13 @@ class OcrWorkerThread(QThread):
         )
         # Чернила смотрим на исходном кадре: координаты слов уже пересчитаны в него.
         words = rapidocr_to_word_boxes(ocr_result, self.img_bgra, 1.0 / scale)
-        return [word for word in words if word.score >= MIN_OCR_SCORE and word.text]
+        words = [word for word in words if word.score >= MIN_OCR_SCORE and word.text]
+        if HAS_RU_WINOCR and words:
+            # Около 0.1 с к 1-2 с самого RapidOCR.
+            words, self.cyrillic_dropped = drop_words_over_russian(
+                words, self._russian_lines(), NATIVE_CT2.word_score
+            )
+        return words
 
     def run(self):
         t0 = time.perf_counter()

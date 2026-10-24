@@ -81,6 +81,40 @@ def wrap_lines(font: QFont, text: str, width: int) -> List[str]:
     return lines or [text]
 
 
+def _fit_in_slot(
+    text: str,
+    font_cfg: FontCustomConfig,
+    base_px: int,
+    floor_px: int,
+    slot_h: int,
+    src_inner_w: int,
+    room_w: int,
+    paragraph: bool,
+) -> Optional[Tuple[QFont, bool, int]]:
+    """Кегль, при котором перевод не выходит за полосу до следующей строки текста.
+
+    Строка чата или списка: сперва в ширину оригинала с лёгким ужатием, потом шире,
+    до соседнего текста или края, и мельче, вплоть до MIN_READABLE_FONT_PX. Абзац
+    переносится в своей ширине. None — не влезает и при самом мелком читаемом кегле.
+    """
+    inner_h = slot_h - 2 * PAD_Y
+    if paragraph:
+        # Без полей: две строки по 12 px занимают 32 px при шаге строк чата около 17 px,
+        # а нижний край строки шрифта — это хвосты букв, а не сами буквы.
+        for px in range(base_px, MIN_READABLE_FONT_PX - 1, -1):
+            font = _make_font(font_cfg, px)
+            if _wrapped_height(font, src_inner_w, text) <= slot_h:
+                return font, True, src_inner_w
+        return None
+    for limit_w, lowest_px in ((src_inner_w, floor_px), (room_w, MIN_READABLE_FONT_PX)):
+        for px in range(base_px, lowest_px - 1, -1):
+            font = _make_font(font_cfg, px)
+            fm = QFontMetrics(font)
+            if fm.horizontalAdvance(text) <= limit_w and fm.tightBoundingRect(text).height() <= inner_h:
+                return font, False, max(src_inner_w, fm.horizontalAdvance(text))
+    return None
+
+
 def layout_plaque(
     block: OverlayBlock,
     font_cfg: FontCustomConfig,
@@ -88,10 +122,13 @@ def layout_plaque(
     bounds: QRect,
     right_limit: Optional[int] = None,
     left_limit: Optional[int] = None,
+    slot_h: Optional[int] = None,
 ) -> PlaqueLayout:
     """Плашка закрывает оригинал целиком; перевод начинается там же, где начинался текст.
 
-    Не влезающий перевод сначала чуть ужимается. Подпись в одну строку затем занимает
+    Если сразу под текстом другая строка (slot_h), плашка подбирает кегль под свою полосу:
+    в чате и списке выросшая вниз плашка сдвигала бы все строки ниже.
+    Иначе не влезающий перевод сначала чуть ужимается. Подпись в одну строку затем занимает
     свободное место до соседнего текста и только потом переносится; абзац растёт вниз.
     Шрифт мельче MIN_READABLE_FONT_PX не берётся: прежде длинный абзац ужимался до 8 px.
     """
@@ -106,6 +143,24 @@ def layout_plaque(
     src_inner_w = max(8, src.width())
     start_x = left_edge if font_cfg.text_align == "center" else src.left() - PAD_X
     room_w = max(src_inner_w, right_edge - start_x - 2 * PAD_X)
+
+    fitted = None
+    if slot_h is not None and not font_cfg.use_fixed_pt:
+        paragraph = block.lines_merged >= 2
+        fitted = _fit_in_slot(text, font_cfg, base_px, floor_px, slot_h, src_inner_w, room_w, paragraph)
+    if fitted is not None:
+        font, wrap, width = fitted
+        if not wrap:
+            # Высоту до шага строк поджимает _fit_to_row: она же ставит буквы по центру.
+            text_h = QFontMetrics(font).height()
+            flags = int(Qt.AlignmentFlag.AlignVCenter)
+            return _place(block, font, flags, text, width, text_h, centered, font_cfg, left_edge, right_edge)
+        flags = int(Qt.AlignmentFlag.AlignTop) | int(Qt.TextFlag.TextWordWrap) | int(Qt.TextFlag.TextDontClip)
+        lay = _place(block, font, flags, text, width, _wrapped_height(font, width, text), centered,
+                     font_cfg, left_edge, right_edge)
+        if lay.rect.height() > slot_h:
+            lay.rect.setHeight(slot_h)
+        return lay
 
     font = _make_font(font_cfg, base_px)
     text_w = QFontMetrics(font).horizontalAdvance(text)
@@ -149,7 +204,23 @@ def layout_plaque(
         if not can_wrap and width > room_w:
             width = room_w
             text = QFontMetrics(font).elidedText(text, Qt.TextElideMode.ElideRight, width)
+    return _place(block, font, flags, text, width, text_h, centered, font_cfg, left_edge, right_edge)
 
+
+def _place(
+    block: OverlayBlock,
+    font: QFont,
+    flags: int,
+    text: str,
+    width: int,
+    text_h: int,
+    centered: bool,
+    font_cfg: FontCustomConfig,
+    left_edge: int,
+    right_edge: int,
+) -> PlaqueLayout:
+    src = block.rect
+    src_inner_w = max(8, src.width())
     if centered and font_cfg.text_align != "center" and width > src_inner_w:
         # Перевод кнопки шире оригинала: рост в обе стороны закрыл бы текст слева (ник у времени).
         centered = False
@@ -191,6 +262,43 @@ def _neighbour_limits(block: OverlayBlock, blocks: List[OverlayBlock]) -> Tuple[
             edge = o.right() + PAD_X + 2
             left = edge if left is None else max(left, edge)
     return left, right
+
+
+def _band_right_limit(block: OverlayBlock, blocks: List[OverlayBlock], band_h: int) -> Optional[int]:
+    """Плашка, вписанная в свою полосу, растёт вправо и не должна закрыть текст правой
+    колонки, который стоит чуть ниже и соседом по строке не считается («4mo ago» у поста)."""
+    src = block.rect
+    top, bottom = src.top(), src.top() + band_h
+    limit: Optional[int] = None
+    for other in blocks:
+        o = other.rect
+        if other is block or o.left() <= src.right():
+            continue
+        if min(bottom, o.bottom()) - max(top, o.top()) > 2:
+            edge = o.left() - PAD_X - 2
+            limit = edge if limit is None else min(limit, edge)
+    return limit
+
+
+def _slot_height(block: OverlayBlock, blocks: List[OverlayBlock]) -> Optional[int]:
+    """От верха текста до следующей строки под ним в той же колонке; None — под ним пусто.
+
+    Рамки OCR соседних строк чата перекрываются на пару пикселей, поэтому слот бывает
+    чуть ниже самой рамки. Сильно меньше — это уже не строка ниже, а соседняя колонка.
+    """
+    src = block.rect
+    slot: Optional[int] = None
+    for other in blocks:
+        o = other.rect
+        if other is block or o.top() <= src.top() + src.height() // 2:
+            continue
+        if min(src.right(), o.right()) < max(src.left(), o.left()):
+            continue
+        gap = o.top() - src.top()
+        slot = gap if slot is None else min(slot, gap)
+    if slot is None or slot < 0.6 * src.height():
+        return None
+    return slot
 
 
 def _row_room(lay: PlaqueLayout, blocks: List[OverlayBlock]) -> Optional[int]:
@@ -264,9 +372,14 @@ def layout_blocks(
             if lay.block.rect.right() < block.rect.left() and _same_row(lay.block.rect, block.rect):
                 edge = lay.rect.right() + 2
                 left_limit = edge if left_limit is None else max(left_limit, edge)
-        lay = layout_plaque(block, font_cfg, style_mode, bounds, right_limit, left_limit)
+        slot_h = _slot_height(block, blocks)
+        if slot_h is not None:
+            band_limit = _band_right_limit(block, blocks, slot_h)
+            if band_limit is not None:
+                right_limit = band_limit if right_limit is None else min(right_limit, band_limit)
+        lay = layout_plaque(block, font_cfg, style_mode, bounds, right_limit, left_limit, slot_h)
         if not lay.flags & int(Qt.TextFlag.TextWordWrap):
-            room = _row_room(lay, blocks)
+            room = slot_h if slot_h is not None else _row_room(lay, blocks)
             if room is not None and lay.rect.height() > room:
                 _fit_to_row(lay, room, font_cfg)
         layouts.append(lay)

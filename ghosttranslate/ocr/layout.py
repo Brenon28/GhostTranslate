@@ -28,11 +28,13 @@ IDENTIFIER_REGEX = re.compile(
 # Число без точки или двоеточия («Over 50 people») меткой не считается: так начинается обычная строка.
 # OCR разрывает номер пробелом («Note 1 1 :») и читает «III» как «Ill». Одиночная «I» и «Ill» —
 # метка только после слова капсом: «Then I went» и «Feeling Ill» — обычные строки абзаца.
+# Время в начале строки («07:39», «[07:39]», «07:39:12») — новое сообщение чата игры или мессенджера.
 LIST_LABEL_REGEX = re.compile(
     r"^(?:[A-Z][A-Za-z]{2,}\s+\d{1,2}(?:\s?\d)?\s*[.:]"
     r"|[A-Z]{3,}\s+(?:[IVXL]{1,5}|Il{1,2})\b"
     r"|[A-Z][A-Za-z]{2,}\s+(?:II|III|IV|VI{0,3}|IX|XI{0,3})\b"
-    r"|(?:\d{1,3}|[a-z])[.)](?=\s))"
+    r"|(?:\d{1,3}|[a-z])[.)](?=\s)"
+    r"|[\[(]?\d{1,2}:\d{2}(?::\d{2})?[\])]?(?=\s|$))"
 )
 # Подпись и её значение в одной строке (метка оглавления и название) стоят дальше обычного пробела.
 ROW_JOIN_GAP_FACTOR = 1.5
@@ -87,7 +89,8 @@ def is_valid_english_box(text: str) -> bool:
 # читает латиницу кириллицей («name» -> «пате»). По одному прочтению не понять, что на экране,
 # поэтому слово сравнивается в обоих.
 WORD_EDGE_PUNCT = "'\"«»“”„.,:;!?()[]{}•·_-—…/\\|*"
-RUSSIAN_WORD_REGEX = re.compile(r"[а-яё]+(?:-[а-яё]+)*")
+# Апостроф внутри — имена из игр: «Зул'джан».
+RUSSIAN_WORD_REGEX = re.compile(r"[а-яё]+(?:['’-][а-яё]+)*")
 CASE_FLIP_REGEX = re.compile(r"[a-z][A-Z]")
 # «3mo», «24h», «1.2k», «2nd»: число с единицей — обычный английский текст, а не мусор OCR.
 NUMBER_WITH_UNIT_REGEX = re.compile(r"\d+(?:[.,]\d+)?(?:[a-zA-Z]{1,3})")
@@ -168,6 +171,10 @@ def drop_words_over_russian(
             decisions.append((word, None, False))
             continue
         line_idx, ru_word = match
+        if word.text == ru_word.text and not any(ch.isalpha() for ch in word.text):
+            # Время, числа и знаки оба OCR читают одинаково: язык строки по ним не понять.
+            decisions.append((word, line_idx, False))
+            continue
         is_russian = russian_reading_wins(word.text, ru_word.text, score)
         decisions.append((word, line_idx, is_russian))
         russian, total = line_votes.get(line_idx, (0, 0))
@@ -177,7 +184,7 @@ def drop_words_over_russian(
     dropped = 0
     for word, line_idx, is_russian in decisions:
         if line_idx is not None and not is_russian:
-            russian, total = line_votes[line_idx]
+            russian, total = line_votes.get(line_idx, (0, 0))
             is_russian = russian >= 2 and russian >= RUSSIAN_LINE_SHARE * total
         if is_russian:
             dropped += 1
@@ -521,8 +528,10 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
                 left_aligned = abs(px1 - line_box.x1) <= 24
                 center_aligned = abs(((px1 + px2) / 2.0) - ((line_box.x1 + line_box.x2) / 2.0)) <= 32
 
+                # Рамки RapidOCR строк с обводкой (чат игры) перекрываются на треть строки:
+                # поджать их до букв нельзя, обводка соседних строк сливается.
                 if (
-                    -4 <= v_gap < MERGE_VERT_FACTOR * h_avg
+                    -max(4.0, 0.35 * h_avg) <= v_gap < MERGE_VERT_FACTOR * h_avg
                     and height_ratio <= 1.35
                     and _is_caps_heading(last_line.text) == _is_caps_heading(line_box.text)
                     and (horiz_overlap > 0 or left_aligned or center_aligned)

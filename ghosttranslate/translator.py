@@ -73,9 +73,7 @@ SLANG_AND_CONTRACTIONS: Dict[str, str] = {
     "that's": "that is",
     "whats": "what is",
     "what's": "what is",
-    "u": "you",
     "ur": "your",
-    "r": "are",
     "pls": "please",
     "plz": "please",
     "thx": "thank you",
@@ -124,6 +122,9 @@ def preprocess_english_text(text: str) -> str:
         # 'ill' только в нижнем регистре разворачивается в 'I will', чтобы не ломать 'Ill'.
         if word == "ill":
             return "I will"
+        # Одна буква — это клавиша («Press U», «Press R»), а не слово чата.
+        if len(word) < 2:
+            return word
         low = word.lower()
         replacement = SLANG_AND_CONTRACTIONS.get(low)
         if replacement is None:

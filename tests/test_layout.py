@@ -174,6 +174,11 @@ class OcrLineTests(unittest.TestCase):
         self.assertGreater(res4[0].x1, 160)
         self.assertLess(res4[0].x1, 200)
 
+        # Подпись интерфейса не ник: «Warning: low health» остаётся целиком.
+        line5 = ocr_line(0, 180, [(40, 70, 13, "Warning:"), (120, 30, 13, "low"), (155, 50, 13, "health")])
+        res5 = _strip_chat_line_header(line5)
+        self.assertEqual([w.text for w in res5], ["Warning:", "low", "health"])
+
     def test_overlapping_rapidocr_lines_still_form_a_paragraph(self):
         # Рамки RapidOCR у текста с обводкой: 22 px при шаге строк 16 px.
         words = [box(57, 81, 60, 22, "still"), box(122, 81, 40, 22, "too"), box(167, 81, 40, 22, "less"),

@@ -36,7 +36,7 @@ class TranslatorFallbackTests(unittest.TestCase):
         self.assertEqual(result, [("Open the inventory", False), ("НАСТРОЙКИ", True)])
 
     def test_chat_slang_and_contractions_preprocessor(self):
-        self.assertEqual(preprocess_english_text("u pls wait rn"), "you please wait right now")
+        self.assertEqual(preprocess_english_text("u pls wait rn"), "u please wait right now")
         self.assertEqual(preprocess_english_text("dont worry im omw"), "do not worry I am on my way")
         self.assertEqual(
             preprocess_english_text("cant wont didnt idk tbh"),
@@ -45,6 +45,8 @@ class TranslatorFallbackTests(unittest.TestCase):
         self.assertEqual(preprocess_english_text("w/ friends w/o ammo"), "with friends without ammo")
         self.assertEqual(preprocess_english_text("ill brb"), "I will I will be right back")
         self.assertEqual(preprocess_english_text("Ill"), "Ill")
+        self.assertEqual(preprocess_english_text("Press U to open"), "Press U to open")
+        self.assertEqual(preprocess_english_text("Press R"), "Press R")
 
     def test_quick_chat_phrases_from_game_dict(self):
         translator = NativeCT2Translator()

@@ -447,6 +447,20 @@ CHAT_TAG_REGEX = re.compile(r"^[\[(][A-Za-zА-Яа-яЁё0-9_\-]{1,16}[\])]:?$")
 NON_CHAT_COLON_WORDS = frozenset(
     {"note", "table", "figure", "fig", "chapter", "section", "statement", "annex", "part", "item", "step"}
 )
+NICK_TOKEN_REGEX = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{1,15}$")
+
+
+def _looks_like_player_nick(prefix: str) -> bool:
+    """Ник без шапки чата: цифра, подчёркивание или заглавная в середине (Player1, Sniper_X, DarkKnight).
+
+    Обычное слово интерфейса («Warning», «HP») сюда не попадает.
+    """
+    name = prefix.strip("[]()")
+    if not name or name.lower() in NON_CHAT_COLON_WORDS or not NICK_TOKEN_REGEX.match(name):
+        return False
+    if any(ch.isdigit() for ch in name) or "_" in name or "-" in name:
+        return True
+    return any(name[i].isupper() and any(ch.islower() for ch in name[:i]) for i in range(1, len(name)))
 
 
 def _split_glued_colon_box(box: RawWordBox) -> Optional[RawWordBox]:
@@ -521,8 +535,7 @@ def _strip_chat_line_header(line_words: List[RawWordBox]) -> List[RawWordBox]:
         first_tok = line_words[0].text.strip()
         if ":" in first_tok and not CHAT_TIME_REGEX.match(first_tok):
             prefix, rest = first_tok.split(":", 1)
-            prefix_clean = prefix.strip("[]()").lower()
-            if prefix_clean and prefix_clean not in NON_CHAT_COLON_WORDS:
+            if _looks_like_player_nick(prefix):
                 if not rest.strip():
                     if n >= 2:
                         remaining = list(line_words[1:])
@@ -546,7 +559,7 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
        'CHALLENGES', 'STORE', 'PROFILE') НИКОГДА не склеиваются в одну длинную полосу!
     3. По вертикали (Абзацы): склеивает строки в многострочный абзац ТОЛЬКО если они образуют
        плотный текстовый блок описания (v_gap < 0.75 * h_avg, содержат строчные буквы или >= 3 слов).
-       Одиночные КАПС-кноки интерфейса по вертикали не склеиваются.
+       Одиночные КАПС-кнопки интерфейса по вертикали не склеиваются.
     """
     if not raw_boxes:
         return []

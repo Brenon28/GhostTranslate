@@ -1,10 +1,11 @@
 import os
+import re
 import sys
 import threading
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # Легковесное ядро v3.0: прямой CTranslate2 + SentencePiece (БЕЗ torch и argostranslate!)
 # ВАЖНО: импортируется ДО winocr/winrt — иначе конфликт статических символов
@@ -19,6 +20,119 @@ except ImportError:
 from .config import APP_VERSION, BASE_DIR, LRU_MAX_SIZE
 from .diagnostics import log_event
 from .game_dict import GAME_UI_DICT
+
+
+# Таблица разворачивания сокращений без апострофов и игрового сленга для SentencePiece.
+SLANG_AND_CONTRACTIONS: Dict[str, str] = {
+    "dont": "do not",
+    "don't": "do not",
+    "cant": "cannot",
+    "can't": "cannot",
+    "wont": "will not",
+    "won't": "will not",
+    "didnt": "did not",
+    "didn't": "did not",
+    "doesnt": "does not",
+    "doesn't": "does not",
+    "isnt": "is not",
+    "isn't": "is not",
+    "arent": "are not",
+    "aren't": "are not",
+    "wasnt": "was not",
+    "wasn't": "was not",
+    "werent": "were not",
+    "weren't": "were not",
+    "havent": "have not",
+    "haven't": "have not",
+    "hasnt": "has not",
+    "hasn't": "has not",
+    "hadnt": "had not",
+    "hadn't": "had not",
+    "wouldnt": "would not",
+    "wouldn't": "would not",
+    "couldnt": "could not",
+    "couldn't": "could not",
+    "shouldnt": "should not",
+    "shouldn't": "should not",
+    "im": "I am",
+    "i'm": "I am",
+    "ive": "I have",
+    "i've": "I have",
+    "i'll": "I will",
+    "i'd": "I would",
+    "youre": "you are",
+    "you're": "you are",
+    "theyre": "they are",
+    "they're": "they are",
+    "we're": "we are",
+    "weve": "we have",
+    "we've": "we have",
+    "lets": "let us",
+    "let's": "let us",
+    "thats": "that is",
+    "that's": "that is",
+    "whats": "what is",
+    "what's": "what is",
+    "u": "you",
+    "ur": "your",
+    "r": "are",
+    "pls": "please",
+    "plz": "please",
+    "thx": "thank you",
+    "ty": "thank you",
+    "tysm": "thank you",
+    "np": "no problem",
+    "idk": "I do not know",
+    "imo": "in my opinion",
+    "imho": "in my opinion",
+    "tbh": "to be honest",
+    "afaik": "as far as I know",
+    "rn": "right now",
+    "nvm": "never mind",
+    "omw": "on my way",
+    "brb": "I will be right back",
+    "afk": "away from keyboard",
+    "btw": "by the way",
+    "bc": "because",
+    "cuz": "because",
+    "gonna": "going to",
+    "wanna": "want to",
+    "gotta": "have to",
+    "lemme": "let me",
+    "gimme": "give me",
+    "kinda": "kind of",
+    "sorta": "sort of",
+}
+
+SLASH_SLANG_REGEX = re.compile(r"(?<![A-Za-z0-9])(w/o|w/)(?![A-Za-z0-9])", re.IGNORECASE)
+WORD_TOKEN_REGEX = re.compile(r"\b[A-Za-z]+(?:'[A-Za-z]+)?\b")
+
+
+def preprocess_english_text(text: str) -> str:
+    """Нормализует сокращения без апострофов и игровой сленг перед подачей в SentencePiece."""
+    if not text:
+        return text
+
+    def _replace_slash(match: re.Match) -> str:
+        tok = match.group(1).lower()
+        return "without" if tok == "w/o" else "with"
+
+    stage1 = SLASH_SLANG_REGEX.sub(_replace_slash, text)
+
+    def _replace_word(match: re.Match) -> str:
+        word = match.group(0)
+        # 'ill' только в нижнем регистре разворачивается в 'I will', чтобы не ломать 'Ill'.
+        if word == "ill":
+            return "I will"
+        low = word.lower()
+        replacement = SLANG_AND_CONTRACTIONS.get(low)
+        if replacement is None:
+            return word
+        if word[0].isupper() and not replacement.startswith("I "):
+            return replacement[0].upper() + replacement[1:]
+        return replacement
+
+    return WORD_TOKEN_REGEX.sub(_replace_word, stage1)
 
 
 # ==============================================================================
@@ -166,12 +280,13 @@ class NativeCT2Translator:
 
     def translate_batch(self, texts: List[str]) -> List[Tuple[str, bool]]:
         """
-        Пункт 1.3 и 4.1 ТЗ v3.0:
+        Пункт 1.3 и 4.1 ТЗ v3.0 + v3.6:
         1. Очищает буллиты и спецсимволы по краям (•·|—*<>[]).
-        2. Мгновенно (0 мс) проверяет игровой словарь GAME_UI_DICT (160+ терминов).
+        2. Мгновенно (0 мс) проверяет игровой словарь GAME_UI_DICT.
         3. Если строка в КАПСЕ (text.isupper()), переводит её в .capitalize() перед подачей в CTranslate2,
            а результат возвращает в .upper() для коротких заголовков (<= 3 слов).
-        4. Переводит оставшиеся фразы единым пакетом через ctranslate2.Translator.translate_batch(beam_size=1).
+        4. Нормализует игровой сленг и пропущенные апострофы через preprocess_english_text.
+        5. Переводит оставшиеся фразы единым пакетом через ctranslate2.Translator.translate_batch(beam_size=2).
 
         Возвращает пары (текст, переведено). False означает, что показан исходный текст:
         модель ещё грузится или перевод упал. Такие строки нельзя класть в кэш.
@@ -219,10 +334,13 @@ class NativeCT2Translator:
             return [r if r is not None else ("", True) for r in results]
 
         try:
-            tokenized_batch = [self.sp_processor.encode(s, out_type=str) for s in ct2_inputs]
+            preprocessed_inputs = [preprocess_english_text(s) for s in ct2_inputs]
+            tokenized_batch = [self.sp_processor.encode(s, out_type=str) for s in preprocessed_inputs]
             ct2_out = self.translator.translate_batch(
                 tokenized_batch,
-                beam_size=1,
+                beam_size=2,
+                repetition_penalty=1.15,
+                no_repeat_ngram_size=3,
                 max_batch_size=32,
             )
             for idx_pos, src, hyp, restore_up in zip(ct2_indices, ct2_inputs, ct2_out, ct2_restore_upper):

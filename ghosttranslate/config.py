@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple
 # ==============================================================================
 # КОНСТАНТЫ И КОНФИГУРАЦИЯ (GHOSTTRANSLATE v3.0)
 # ==============================================================================
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
 TRANSLATION_ENGINE = "native-ct2:int8-lite"
 # Релизы с установщиком GhostTranslate_v<версия>_Setup.exe, из которых программа обновляется.
 UPDATE_REPO = "Brenon28/GhostTranslate"
@@ -16,6 +16,12 @@ UPDATE_REPO = "Brenon28/GhostTranslate"
 UPDATE_CHECK_DELAY_MS = 8000
 DEFAULT_OCR_BACKEND = "WinOCR"
 DEFAULT_RENDER_STYLE = "wrap_gradient"
+DEFAULT_TIMER_SCAN_MODE = "smart_grid"
+
+TIMER_SCAN_MODES: List[Tuple[str, str]] = [
+    ("smart_grid", "Умный по зонам (Экономия CPU)"),
+    ("forced_full", "Принудительный каждый тик (Макс. точность)"),
+]
 
 # Глобальные клавиши. Пользователь меняет их в «Aa Шрифт», если игра сама использует F8/F9:
 # RegisterHotKey забирает нажатие целиком, и игра его не получает.
@@ -53,6 +59,7 @@ PIXEL_DIFF_THRESHOLD = 3
 WATCHDOG_DIFF_THRESHOLD = 14
 WATCHDOG_INTERVAL_MS = 150
 WATCHDOG_PADDING_PX = 6
+WATCHDOG_CHAT_VERT_PAD_PX = 80
 SEQ_MATCH_THRESHOLD = 0.95
 LRU_MAX_SIZE = 2000
 # Перевод идёт порциями: первые плашки появляются после первой порции, остальные следом.

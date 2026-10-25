@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..config import APP_VERSION, FONT_FAMILIES
+from ..config import APP_VERSION, FONT_FAMILIES, TIMER_SCAN_MODES
 from ..hotkeys import parse_hotkey
 from ..settings import FontCustomConfig
 from ..sounds import play_startup_sound
@@ -45,6 +45,7 @@ class FontSettingsPopup(QWidget):
     settings_changed = pyqtSignal()
     hotkeys_changed = pyqtSignal()
     game_mode_changed = pyqtSignal(bool)
+    timer_scan_mode_changed = pyqtSignal(str)
     # True, пока поле клавиши ждёт нажатия: глобальные клавиши на это время снимаются.
     hotkey_capture_active = pyqtSignal(bool)
 
@@ -206,6 +207,17 @@ class FontSettingsPopup(QWidget):
         self.chk_game_mode.toggled.connect(self._on_game_mode_toggled)
         layout.addWidget(self.chk_game_mode)
 
+        row_scan_mode = QHBoxLayout()
+        row_scan_mode.addWidget(QLabel("Режим обновления таймера:", card))
+        self.combo_timer_mode = QComboBox(card)
+        for mode_id, mode_label in TIMER_SCAN_MODES:
+            self.combo_timer_mode.addItem(mode_label, mode_id)
+        scan_mode_idx = 1 if self.font_cfg.timer_scan_mode == "forced_full" else 0
+        self.combo_timer_mode.setCurrentIndex(scan_mode_idx)
+        self.combo_timer_mode.currentIndexChanged.connect(self._on_timer_scan_mode_changed)
+        row_scan_mode.addWidget(self.combo_timer_mode, 1)
+        layout.addLayout(row_scan_mode)
+
         # 6. Звук и глобальные клавиши
         line = QFrame(card)
         line.setFrameShape(QFrame.Shape.HLine)
@@ -296,6 +308,20 @@ class FontSettingsPopup(QWidget):
         self.font_cfg.game_mode = checked
         self.font_cfg.save()
         self.game_mode_changed.emit(checked)
+
+    def _on_timer_scan_mode_changed(self, _idx: int):
+        val = self.combo_timer_mode.currentData()
+        if val in ("smart_grid", "forced_full"):
+            self.font_cfg.timer_scan_mode = str(val)
+            self.font_cfg.save()
+            self.timer_scan_mode_changed.emit(self.font_cfg.timer_scan_mode)
+
+    def set_timer_scan_mode(self, mode: str) -> None:
+        normalized = "forced_full" if mode == "forced_full" else "smart_grid"
+        idx = 1 if normalized == "forced_full" else 0
+        self.combo_timer_mode.blockSignals(True)
+        self.combo_timer_mode.setCurrentIndex(idx)
+        self.combo_timer_mode.blockSignals(False)
 
     def _on_sound_toggled(self, checked: bool):
         self.font_cfg.sound_enabled = checked

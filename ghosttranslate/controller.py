@@ -33,6 +33,7 @@ from .config import (
     TRANSLATION_ENGINE,
     UPDATE_CHECK_DELAY_MS,
     VK_ESCAPE,
+    WATCHDOG_CHAT_VERT_PAD_PX,
     WATCHDOG_PADDING_PX,
     WM_HOTKEY,
 )
@@ -40,7 +41,7 @@ from .diagnostics import LOG_RING_BUFFER, format_benchmark_summary, log_event
 from .game_dict import GAME_UI_DICT
 from .hotkeys import MOD_NOREPEAT, Hotkey, is_hotkey_down, parse_hotkey
 from .models import OverlayBlock
-from .ocr.imaging import compute_small_gray_numpy
+from .ocr.imaging import compute_small_gray_numpy, max_grid_diff_numpy
 from .screens import (
     crop_to_region,
     mask_native_rects,
@@ -167,12 +168,13 @@ class GhostTranslateController(QWidget):
         self.font_popup.hotkeys_changed.connect(self._on_hotkeys_changed)
         self.font_popup.hotkey_capture_active.connect(self._set_hotkeys_suspended)
         self.font_popup.game_mode_changed.connect(self._on_game_mode_changed)
+        self.font_popup.timer_scan_mode_changed.connect(self._on_timer_scan_mode_changed)
 
         self.log_dialog = LogViewerDialog()
         self.log_dialog.btn_copy.clicked.connect(self.export_and_copy_logs)
         self.log_dialog.btn_bundle.clicked.connect(self.save_diagnostic_bundle)
 
-        self.toolbar = FloatingToolbar(self.font_cfg.toolbar_anchor)
+        self.toolbar = FloatingToolbar(self.font_cfg.toolbar_anchor, self.font_cfg.timer_scan_mode)
         self.toolbar.anchor_changed.connect(self._on_toolbar_anchor_changed)
         self.toolbar.fullscreen_clicked.connect(self.capture_full_screen)
         self.toolbar.region_snip_clicked.connect(self.start_snipping_mode)
@@ -181,6 +183,7 @@ class GhostTranslateController(QWidget):
         self.toolbar.render_style_changed.connect(self.set_render_style)
         self.toolbar.font_popup_toggled.connect(self.toggle_font_popup)
         self.toolbar.timer_changed.connect(self.set_timer_interval)
+        self.toolbar.timer_scan_mode_toggled.connect(self._on_toolbar_timer_scan_mode_toggled)
         self.toolbar.hide_toggle_clicked.connect(self.toggle_visibility)
         self.toolbar.logs_clicked.connect(self.show_logs_modal)
         self.toolbar.exit_clicked.connect(self.emergency_shutdown)
@@ -457,6 +460,16 @@ class GhostTranslateController(QWidget):
             if enabled
             else "Игровой режим выключен: окна снова скрыты от захвата экрана"
         )
+
+    def _on_timer_scan_mode_changed(self, mode: str) -> None:
+        self.toolbar.set_timer_scan_mode(mode)
+        log_event(f"Режим обновления таймера переключен на: {mode}")
+
+    def _on_toolbar_timer_scan_mode_toggled(self, mode: str) -> None:
+        self.font_cfg.timer_scan_mode = mode
+        self.font_cfg.save()
+        self.font_popup.set_timer_scan_mode(mode)
+        log_event(f"Режим обновления таймера переключен с панели на: {mode}")
 
     # --------------------------------------------------------------------------
     # ПОТОКИ: ССЫЛКА ДЕРЖИТСЯ ДО finished, ИНАЧЕ QThread УДАЛЯЕТСЯ ВО ВРЕМЯ run()
@@ -859,10 +872,11 @@ class GhostTranslateController(QWidget):
     def on_auto_monitor_tick(self):
         if self.monitor_interval_ms <= 0 or self.is_hidden:
             return
-        self._trigger_capture_pipeline(check_static=True)
+        check_static = getattr(self.font_cfg, "timer_scan_mode", "smart_grid") != "forced_full"
+        self._trigger_capture_pipeline(check_static=check_static)
 
     def _arm_watchdog(self) -> None:
-        """Следит только за прямоугольником вокруг плашек: смена картинки там значит, что перевод устарел."""
+        """Следит за областью захвата или прямоугольником вокруг плашек: смена картинки там значит, что перевод устарел."""
         self.watchdog.disarm()
         # В игровом режиме плашки попадают в снимок, и watchdog видел бы их вместо картинки под ними.
         if (
@@ -878,14 +892,18 @@ class GhostTranslateController(QWidget):
         ):
             return
         screen, capture_rect = self._capture_target()
-        union = QRect()
-        for block in self.overlay_blocks:
-            union = union.united(block.rect)
-        pad = WATCHDOG_PADDING_PX
-        union = union.adjusted(-pad, -pad, pad, pad).intersected(capture_rect)
-        if union.isEmpty():
+        if self.region_rect is not None:
+            watch_rect = QRect(self.region_rect).intersected(capture_rect)
+        else:
+            union = QRect()
+            for block in self.overlay_blocks:
+                union = union.united(block.rect)
+            pad = WATCHDOG_PADDING_PX
+            v_pad = WATCHDOG_CHAT_VERT_PAD_PX
+            watch_rect = union.adjusted(-pad, -v_pad, pad, v_pad).intersected(capture_rect)
+        if watch_rect.isEmpty():
             return
-        region = native_capture_region(screen.geometry(), self._last_capture_dpr, union)
+        region = native_capture_region(screen.geometry(), self._last_capture_dpr, watch_rect)
         crop = crop_to_region(self._frame_bgra, self._frame_region, region)
         if crop is None:
             return
@@ -913,13 +931,14 @@ class GhostTranslateController(QWidget):
         for nb in new_blocks:
             if not nb.is_pending:
                 continue
+            nb_stripped = nb.orig_text.strip()
             for ob in self.overlay_blocks:
                 if ob.is_pending or ob.is_fallback:
                     continue
                 if (
                     abs(nb.rect.x() - ob.rect.x()) <= 28
                     and abs(nb.rect.y() - ob.rect.y()) <= 22
-                    and SequenceMatcher(None, nb.orig_text, ob.orig_text).ratio() >= 0.88
+                    and nb_stripped == ob.orig_text.strip()
                 ):
                     nb.trans_text = ob.trans_text
                     nb.is_pending = False
@@ -1010,7 +1029,7 @@ class GhostTranslateController(QWidget):
             and self.prev_small_gray is not None
             and small_gray.shape == self.prev_small_gray.shape
         ):
-            diff = float(np.mean(np.abs(small_gray - self.prev_small_gray)))
+            diff = max_grid_diff_numpy(small_gray, self.prev_small_gray)
             if diff < PIXEL_DIFF_THRESHOLD:
                 self._schedule_next_monitor_tick()
                 return
@@ -1074,8 +1093,7 @@ class GhostTranslateController(QWidget):
             return
 
         if self._check_seq_on_complete and self.prev_ocr_signature:
-            ratio = SequenceMatcher(None, signature, self.prev_ocr_signature).ratio()
-            if ratio > SEQ_MATCH_THRESHOLD:
+            if signature == self.prev_ocr_signature:
                 self._finish_pipeline_cycle()
                 return
 

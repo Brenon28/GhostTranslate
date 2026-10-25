@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ghosttranslate.models import RawWordBox
 from ghosttranslate.ocr.layout import (
+    _strip_chat_line_header,
     drop_words_over_russian,
     estimate_font_px,
     is_clean_russian_word,
@@ -123,19 +124,60 @@ class OcrLineTests(unittest.TestCase):
         self.assertEqual(texts, ["NOTES TO THE FINANCIAL", "STATEMENT V: Statement of Comparison"])
 
     def test_chat_messages_split_on_timestamp_and_keep_their_wrap(self):
-        # Чат WoW: шаг строк 17 px; второе сообщение перенесено на следующую строку.
+        # Чат WoW: шаг строк 17 px; шапка (время, тег, ник) отрезается, а перенос строки сохраняется.
         words = ocr_line(0, 151, [(58, 40, 13, "07:39"), (102, 25, 13, "[R]"), (131, 60, 13, "[Fist]:"),
                                   (195, 50, 13, "seems"), (250, 30, 13, "like")])
         words += ocr_line(1, 168, [(58, 40, 13, "07:39"), (102, 25, 13, "[R]"), (131, 60, 13, "[Shuurly]:"),
                                    (195, 30, 13, "still"), (230, 30, 13, "too"), (265, 30, 13, "less")])
         words += ocr_line(2, 185, [(72, 40, 13, "about"), (117, 50, 13, "feared"), (172, 40, 13, "peeps")])
         words += ocr_line(3, 202, [(58, 40, 13, "[07:40]"), (102, 50, 13, "Sorry"), (157, 40, 13, "guys")])
-        texts = [p.text for p in sorted(merge_ocr_boxes_into_paragraphs(words), key=lambda p: p.y1)]
+        paras = sorted(merge_ocr_boxes_into_paragraphs(words), key=lambda p: p.y1)
+        texts = [p.text for p in paras]
         self.assertEqual(texts, [
-            "07:39 [R] [Fist]: seems like",
-            "07:39 [R] [Shuurly]: still too less about feared peeps",
-            "[07:40] Sorry guys",
+            "seems like",
+            "still too less about feared peeps",
+            "Sorry guys",
         ])
+        self.assertEqual(paras[0].x1, 195)
+        self.assertEqual(paras[2].x1, 102)
+
+    def test_strip_chat_line_header_variants(self):
+        # 1. [07:39] [Squad] Player_One: need ammo at B
+        line1 = ocr_line(
+            0, 100,
+            [(10, 45, 13, "[07:39]"), (60, 50, 13, "[Squad]"), (115, 75, 13, "Player_One:"),
+             (195, 35, 13, "need"), (235, 40, 13, "ammo"), (280, 20, 13, "at"), (305, 15, 13, "B")],
+        )
+        res1 = _strip_chat_line_header(line1)
+        self.assertEqual([w.text for w in res1], ["need", "ammo", "at", "B"])
+        self.assertEqual(res1[0].x1, 195)
+
+        # 2. 07:39 DarkKnight: hello
+        line2 = ocr_line(0, 120, [(10, 40, 13, "07:39"), (55, 80, 13, "DarkKnight:"), (140, 40, 13, "hello")])
+        res2 = _strip_chat_line_header(line2)
+        self.assertEqual([w.text for w in res2], ["hello"])
+        self.assertEqual(res2[0].x1, 140)
+
+        # 3. [All] Sniper_X: gg wp
+        line3 = ocr_line(
+            0, 140,
+            [(10, 35, 13, "[All]"), (50, 65, 13, "Sniper_X:"), (120, 20, 13, "gg"), (145, 25, 13, "wp")],
+        )
+        res3 = _strip_chat_line_header(line3)
+        self.assertEqual([w.text for w in res3], ["gg", "wp"])
+        self.assertEqual(res3[0].x1, 120)
+
+        # 4. Склеенное двоеточие без пробела: Player1:hello world
+        line4 = ocr_line(0, 160, [(100, 130, 13, "Player1:hello"), (236, 45, 13, "world")])
+        res4 = _strip_chat_line_header(line4)
+        self.assertEqual([w.text for w in res4], ["hello", "world"])
+        self.assertGreater(res4[0].x1, 160)
+        self.assertLess(res4[0].x1, 200)
+
+        # Подпись интерфейса не ник: «Warning: low health» остаётся целиком.
+        line5 = ocr_line(0, 180, [(40, 70, 13, "Warning:"), (120, 30, 13, "low"), (155, 50, 13, "health")])
+        res5 = _strip_chat_line_header(line5)
+        self.assertEqual([w.text for w in res5], ["Warning:", "low", "health"])
 
     def test_overlapping_rapidocr_lines_still_form_a_paragraph(self):
         # Рамки RapidOCR у текста с обводкой: 22 px при шаге строк 16 px.

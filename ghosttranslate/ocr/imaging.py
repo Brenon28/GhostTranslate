@@ -17,6 +17,42 @@ def compute_small_gray_numpy(img_bgra: np.ndarray) -> np.ndarray:
     return np.mean(img_bgra[::8, ::8, :3], axis=2).astype(np.float32)
 
 
+def max_grid_diff_numpy(
+    curr_gray: np.ndarray,
+    prev_gray: np.ndarray,
+    rows: int = 8,
+    cols: int = 12,
+) -> float:
+    """Возвращает максимальную среднюю разницу яркости среди ячеек сетки rows x cols.
+
+    На полном экране одна новая строка чата меняет меньше 1% всех пикселей кадра,
+    поэтому среднее по всему экрану не замечает чат, а максимум по ячейке ловит его сразу.
+    """
+    if curr_gray is None or prev_gray is None or curr_gray.shape != prev_gray.shape:
+        return float("inf")
+    if curr_gray.size == 0:
+        return 0.0
+    diff = np.abs(curr_gray.astype(np.float32) - prev_gray.astype(np.float32))
+    h, w = diff.shape[:2]
+    grid_rows = max(1, min(rows, h))
+    grid_cols = max(1, min(cols, w))
+    max_diff = 0.0
+    for r in range(grid_rows):
+        r0 = (r * h) // grid_rows
+        r1 = ((r + 1) * h) // grid_rows
+        if r1 <= r0:
+            continue
+        for c in range(grid_cols):
+            c0 = (c * w) // grid_cols
+            c1 = ((c + 1) * w) // grid_cols
+            if c1 <= c0:
+                continue
+            cell_mean = float(np.mean(diff[r0:r1, c0:c1]))
+            if cell_mean > max_diff:
+                max_diff = cell_mean
+    return max_diff
+
+
 def downscale_bgr_via_qimage(img_bgra: np.ndarray, scale: float) -> np.ndarray:
     """
     Масштабирование кадра для RapidOCR через встроенный QImage (без cv2).

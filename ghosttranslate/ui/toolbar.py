@@ -9,6 +9,7 @@ from ..config import (
     DEFAULT_HOTKEY_TOGGLE,
     DEFAULT_OCR_BACKEND,
     DEFAULT_RENDER_STYLE,
+    DEFAULT_TIMER_SCAN_MODE,
     PLAQUE_STYLES,
     STYLE_ID_TO_LABEL,
     STYLE_LABEL_TO_ID,
@@ -31,13 +32,18 @@ class FloatingToolbar(QWidget):
     render_style_changed = pyqtSignal(str)
     font_popup_toggled = pyqtSignal()
     timer_changed = pyqtSignal(str)
+    timer_scan_mode_toggled = pyqtSignal(str)
     hide_toggle_clicked = pyqtSignal()
     logs_clicked = pyqtSignal()
     exit_clicked = pyqtSignal()
     # Середина верхнего края после перетаскивания (кортеж x, y) или None после сброса двойным щелчком.
     anchor_changed = pyqtSignal(object)
 
-    def __init__(self, anchor: Optional[Tuple[int, int]] = None):
+    def __init__(
+        self,
+        anchor: Optional[Tuple[int, int]] = None,
+        timer_scan_mode: str = DEFAULT_TIMER_SCAN_MODE,
+    ):
         super().__init__()
         self.setWindowTitle(f"GhostTranslate Toolbar v{APP_VERSION}")
         self.setWindowFlags(
@@ -52,6 +58,9 @@ class FloatingToolbar(QWidget):
         self.is_collapsed = False
         self.current_ocr = DEFAULT_OCR_BACKEND
         self.current_style = DEFAULT_RENDER_STYLE
+        self.current_timer_scan_mode = (
+            timer_scan_mode if timer_scan_mode in ("smart_grid", "forced_full") else DEFAULT_TIMER_SCAN_MODE
+        )
 
         self.collapse_timer = QTimer(self)
         self.collapse_timer.setSingleShot(True)
@@ -209,6 +218,11 @@ class FloatingToolbar(QWidget):
         self.timer_combo.addItems(TIMER_OPTIONS)
         self.timer_combo.currentTextChanged.connect(self.timer_changed.emit)
 
+        self.btn_timer_mode = QPushButton(self.expanded_widget)
+        self.btn_timer_mode.setObjectName("SwitchBtn")
+        self.btn_timer_mode.clicked.connect(self._on_toggle_timer_scan_mode)
+        self._update_timer_mode_button()
+
         self.btn_clear = QPushButton(self.expanded_widget)
         self.btn_clear.clicked.connect(self.hide_toggle_clicked.emit)
 
@@ -233,6 +247,7 @@ class FloatingToolbar(QWidget):
             self.style_combo,
             self.btn_font,
             self.timer_combo,
+            self.btn_timer_mode,
             self.btn_clear,
             self.btn_logs,
             self.btn_close,
@@ -257,6 +272,35 @@ class FloatingToolbar(QWidget):
         self.btn_ocr_toggle.setText(f"OCR: {self.current_ocr}")
         self.reposition()
         self.ocr_backend_toggled.emit(self.current_ocr)
+
+    def _update_timer_mode_button(self) -> None:
+        if self.current_timer_scan_mode == "forced_full":
+            self.btn_timer_mode.setText("Скан: Тик")
+            self.btn_timer_mode.setToolTip(
+                "Режим обновления таймера: Принудительный каждый тик (Макс. точность). "
+                "Нажмите для переключения в Умный по зонам (Экономия CPU)"
+            )
+        else:
+            self.btn_timer_mode.setText("Скан: Зоны")
+            self.btn_timer_mode.setToolTip(
+                "Режим обновления таймера: Умный по зонам (Экономия CPU). "
+                "Нажмите для переключения в Принудительный каждый тик (Макс. точность)"
+            )
+
+    def set_timer_scan_mode(self, mode: str) -> None:
+        normalized = mode if mode in ("smart_grid", "forced_full") else DEFAULT_TIMER_SCAN_MODE
+        if normalized == self.current_timer_scan_mode:
+            return
+        self.current_timer_scan_mode = normalized
+        self._update_timer_mode_button()
+        self.reposition()
+
+    def _on_toggle_timer_scan_mode(self) -> None:
+        next_mode = "forced_full" if self.current_timer_scan_mode == "smart_grid" else "smart_grid"
+        self.current_timer_scan_mode = next_mode
+        self._update_timer_mode_button()
+        self.reposition()
+        self.timer_scan_mode_toggled.emit(self.current_timer_scan_mode)
 
     def _on_style_combo_changed(self, label_text: str):
         style_id = STYLE_LABEL_TO_ID.get(label_text, "wrap_gradient")

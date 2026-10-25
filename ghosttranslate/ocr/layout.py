@@ -442,6 +442,113 @@ def _cluster_loose_words(usable: List[RawWordBox]) -> List[List[RawWordBox]]:
     return groups
 
 
+CHAT_TIME_REGEX = re.compile(r"^[\[(]?\d{1,2}:\d{2}(?::\d{2})?[\])]?$")
+CHAT_TAG_REGEX = re.compile(r"^[\[(][A-Za-zА-Яа-яЁё0-9_\-]{1,16}[\])]:?$")
+NON_CHAT_COLON_WORDS = frozenset(
+    {"note", "table", "figure", "fig", "chapter", "section", "statement", "annex", "part", "item", "step"}
+)
+NICK_TOKEN_REGEX = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{1,15}$")
+
+
+def _looks_like_player_nick(prefix: str) -> bool:
+    """Ник без шапки чата: цифра, подчёркивание или заглавная в середине (Player1, Sniper_X, DarkKnight).
+
+    Обычное слово интерфейса («Warning», «HP») сюда не попадает.
+    """
+    name = prefix.strip("[]()")
+    if not name or name.lower() in NON_CHAT_COLON_WORDS or not NICK_TOKEN_REGEX.match(name):
+        return False
+    if any(ch.isdigit() for ch in name) or "_" in name or "-" in name:
+        return True
+    return any(name[i].isupper() and any(ch.islower() for ch in name[:i]) for i in range(1, len(name)))
+
+
+def _split_glued_colon_box(box: RawWordBox) -> Optional[RawWordBox]:
+    """Отрезает ник до двоеточия внутри одного слова ('Player1:hello') со сдвигом x1 вправо."""
+    raw = box.text.strip()
+    if ":" not in raw:
+        return None
+    prefix, rest = raw.split(":", 1)
+    msg = rest.strip()
+    if not msg:
+        return None
+    total_len = max(1, len(raw))
+    prefix_len = len(prefix) + 1
+    shift_px = int(round((prefix_len / float(total_len)) * max(1, box.width)))
+    new_x1 = min(box.x2 - 4, box.x1 + max(1, shift_px))
+    return RawWordBox(
+        x1=new_x1,
+        y1=box.y1,
+        x2=box.x2,
+        y2=box.y2,
+        text=msg,
+        score=box.score,
+        lines_merged=box.lines_merged,
+        font_px=box.font_px,
+        split_from_bullet=box.split_from_bullet,
+        break_before=True,
+        line_id=box.line_id,
+    )
+
+
+def _strip_chat_line_header(line_words: List[RawWordBox]) -> List[RawWordBox]:
+    """Отрезает шапку строки игрового чата (таймкод, тег канала и ник с двоеточием).
+
+    Возвращает слова самого сообщения со сдвинутым вправо x1, чтобы оригинальный
+    ник и время оставались открытыми на экране, а в перевод уходила только суть.
+    """
+    if not line_words:
+        return []
+
+    n = len(line_words)
+    idx = 0
+    while idx < min(n, 3):
+        tok = line_words[idx].text.strip()
+        if CHAT_TIME_REGEX.match(tok):
+            idx += 1
+            continue
+        if CHAT_TAG_REGEX.match(tok) and not tok.endswith(":"):
+            idx += 1
+            continue
+        break
+
+    remaining: Optional[List[RawWordBox]] = None
+
+    if idx > 0:
+        colon_pos = None
+        for j in range(idx, min(n, idx + 2)):
+            tok = line_words[j].text.strip()
+            if ":" in tok and not CHAT_TIME_REGEX.match(tok):
+                colon_pos = j
+                break
+        if colon_pos is not None:
+            tok = line_words[colon_pos].text.strip()
+            if tok.endswith(":"):
+                remaining = list(line_words[colon_pos + 1 :])
+            else:
+                tail_box = _split_glued_colon_box(line_words[colon_pos])
+                if tail_box is not None:
+                    remaining = [tail_box, *line_words[colon_pos + 1 :]]
+        else:
+            remaining = list(line_words[idx:])
+    else:
+        first_tok = line_words[0].text.strip()
+        if ":" in first_tok and not CHAT_TIME_REGEX.match(first_tok):
+            prefix, rest = first_tok.split(":", 1)
+            if _looks_like_player_nick(prefix):
+                if not rest.strip():
+                    if n >= 2:
+                        remaining = list(line_words[1:])
+                else:
+                    tail_box = _split_glued_colon_box(line_words[0])
+                    if tail_box is not None:
+                        remaining = [tail_box, *line_words[1:]]
+
+    if remaining and any(any(ch.isalpha() for ch in w.text) for w in remaining):
+        return remaining
+    return line_words
+
+
 def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWordBox]:
     """
     Пункт 1.2 ТЗ v3.0 (Режим Exact Place для игровых меню и карточек):
@@ -466,6 +573,14 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
     merged_lines: List[RawWordBox] = []
     for line in line_clusters:
         line.sort(key=lambda w: w.x1)
+        stripped_line = _strip_chat_line_header(line)
+        header_stripped = (
+            len(stripped_line) != len(line)
+            or (stripped_line and stripped_line[0].x1 != line[0].x1)
+        )
+        line = stripped_line
+        if not line:
+            continue
         merged_lines.append(
             RawWordBox(
                 x1=min(w.x1 for w in line),
@@ -476,6 +591,7 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
                 score=min(w.score for w in line),
                 lines_merged=1,
                 font_px=estimate_font_px(line),
+                break_before=header_stripped,
             )
         )
 
@@ -507,8 +623,12 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
 
     for line_box in merged_lines:
         placed_in_para = False
-        # Пункт списка начинает свой блок: иначе оглавление склеивалось в «Note 15: Note 16: Note 17:».
-        if _is_dense_paragraph_line(line_box) and not starts_list_item(line_box.text):
+        # Пункт списка или новое сообщение чата со срезанной шапкой начинает свой блок.
+        if (
+            _is_dense_paragraph_line(line_box)
+            and not starts_list_item(line_box.text)
+            and not line_box.break_before
+        ):
             for para in reversed(para_clusters):
                 last_line = para[-1]
                 if not _is_dense_paragraph_line(last_line):

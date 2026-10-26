@@ -17,11 +17,26 @@ UPDATE_CHECK_DELAY_MS = 8000
 DEFAULT_OCR_BACKEND = "WinOCR"
 DEFAULT_RENDER_STYLE = "wrap_gradient"
 DEFAULT_TIMER_SCAN_MODE = "smart_grid"
+DEFAULT_CPU_POWER_MODE = "standard"
 
 TIMER_SCAN_MODES: List[Tuple[str, str]] = [
-    ("smart_grid", "Умный по зонам (Экономия CPU)"),
-    ("forced_full", "Принудительный каждый тик (Макс. точность)"),
+    ("smart_grid", "1. Зоны (Эконом)"),
+    ("forced_full", "2. Тик (Точный 1.5x)"),
+    ("turbo_chat", "3. Турбо-чат (Без 1.5x апскейла)"),
 ]
+
+CPU_POWER_MODES: List[Tuple[str, str]] = [
+    ("eco", "Эконом (2 потока)"),
+    ("standard", "Стандарт (4 потока)"),
+    ("max", "Максимум (6-8 потоков)"),
+]
+
+# Профиль потоков CPU: (ct2_inter_threads, ct2_intra_threads, rapidocr_threads).
+CPU_POWER_PROFILES: Dict[str, Tuple[int, int, int]] = {
+    "eco": (1, 2, 2),
+    "standard": (2, 2, 4),
+    "max": (4, 2, 6),
+}
 
 # Глобальные клавиши. Пользователь меняет их в «Aa Шрифт», если игра сама использует F8/F9:
 # RegisterHotKey забирает нажатие целиком, и игра его не получает.
@@ -56,6 +71,7 @@ FONT_FAMILIES = [
 TIMER_OPTIONS = ["Ручной", "0.5s", "1.0s", "1.5s", "2.0s", "3.0s", "5.0s", "10.0s", "15.0s", "30.0s"]
 
 PIXEL_DIFF_THRESHOLD = 3
+TURBO_PIXEL_DIFF_THRESHOLD = 1.5
 WATCHDOG_DIFF_THRESHOLD = 14
 WATCHDOG_INTERVAL_MS = 150
 WATCHDOG_PADDING_PX = 6
@@ -69,8 +85,8 @@ MAX_BLOCKS_PER_FRAME = 150
 MIN_OCR_SCORE = 0.42
 # Кегль перевода к оценённому кеглю оригинала (models.RawWordBox.font_px).
 FONT_HEIGHT_RATIO = 1.0
-# Мельче этого перевод не ужимается: длинный русский текст лучше растянуть вниз.
-MIN_READABLE_FONT_PX = 12
+# Мельче этого перевод не ужимается: длинный русский текст умещается в слот без наезда на нижний блок.
+MIN_READABLE_FONT_PX = 9
 
 # Пункт 1.2 ТЗ v3.0: Строгий порог горизонтальной склейки (0.55 * h_avg) и вертикальной (0.75 * h_avg)
 MERGE_HORIZ_FACTOR = 0.55

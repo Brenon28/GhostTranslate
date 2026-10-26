@@ -57,13 +57,54 @@ def _is_bare_list_label(words: List[RawWordBox]) -> bool:
     return match is not None and not text[match.end():].strip(" .:-–—")
 
 
+PSEUDO_ICON_PREFIX_REGEX = re.compile(r"^[@©®¤§°•·]+\s*(?=\d)")
+CONFUSABLE_U_PREFIX_REGEX = re.compile(
+    r"\b(?:(?:Ll|II|lI)(?=[bcdfghjklmnpqrstvwxzBCDFGHJKLMNPQRSTVWXZ][a-zA-Z]{2,})"
+    r"|Il(?=[bcdfghjkmnpqrstvwxzBCDFGHJKMNPQRSTVWXZ][a-zA-Z]{2,}))"
+)
+TRAILING_TIMECODE_REGEX = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\s*$")
+BOT_TAG_LINE_REGEX = re.compile(
+    r"^(?:@\S+|\S+(?:\s+\S+){0,2})\s+\[?(?:BOT|APP|ГОТ)\]?\s*$",
+    re.IGNORECASE,
+)
+DISCORD_MENTION_ONLY_REGEX = re.compile(
+    r"^@[A-Za-z0-9_.\-]+(?:\s+[A-Z][A-Za-z0-9_.\-]*)*(?:\s*\([^)]+\))?\s*$"
+)
+
+
+def normalize_ocr_confusables(text: str) -> str:
+    """Исправляет типичные опечатки OCR на пиксельных шрифтах ('Llpgrades' -> 'Upgrades') и значки перед числами."""
+    if not text:
+        return text
+    cleaned = PSEUDO_ICON_PREFIX_REGEX.sub("", text.strip())
+    return CONFUSABLE_U_PREFIX_REGEX.sub("U", cleaned)
+
+
 def is_identifier_token(token: str) -> bool:
     core = token.strip(".,:;!?()[]\"'«»")
     return bool(core) and IDENTIFIER_REGEX.fullmatch(core) is not None
 
 
+def is_chat_metadata_line(text: str) -> bool:
+    """Шапка сообщения Discord/чата: '17 [d1s] k1r1to 20:51', 'Serega [D1S] 22:02', '@Username', 'Mee6 BOT'."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if BOT_TAG_LINE_REGEX.match(stripped) or DISCORD_MENTION_ONLY_REGEX.match(stripped):
+        return True
+    time_match = TRAILING_TIMECODE_REGEX.search(stripped)
+    if time_match:
+        prefix = stripped[: time_match.start()].strip()
+        tokens = prefix.split()
+        if 1 <= len(tokens) <= 4 and all(len(tok) <= 20 for tok in tokens):
+            return True
+    return False
+
+
 def is_valid_english_box(text: str) -> bool:
     if not text or len(text.strip()) < 2:
+        return False
+    if is_chat_metadata_line(text):
         return False
     if all(is_identifier_token(token) for token in text.split()):
         return False
@@ -94,6 +135,8 @@ RUSSIAN_WORD_REGEX = re.compile(r"[а-яё]+(?:['’-][а-яё]+)*")
 CASE_FLIP_REGEX = re.compile(r"[a-z][A-Z]")
 # «3mo», «24h», «1.2k», «2nd»: число с единицей — обычный английский текст, а не мусор OCR.
 NUMBER_WITH_UNIT_REGEX = re.compile(r"\d+(?:[.,]\d+)?(?:[a-zA-Z]{1,3})")
+# «x1», «x10» в «Barricade x1» — множитель количества, а не мусор OCR.
+MULTIPLIER_TOKEN_REGEX = re.compile(r"[xX]\d+")
 # Насколько русское прочтение должно быть правдоподобнее английского (лог-вероятность на букву).
 RUSSIAN_SCORE_MARGIN = 0.3
 RUSSIAN_LINE_SHARE = 0.5
@@ -116,9 +159,9 @@ def looks_like_garbled_latin(text: str) -> bool:
     core = _word_core(text)
     if not core or not any(ch.isalpha() for ch in core):
         return False
-    if NUMBER_WITH_UNIT_REGEX.fullmatch(core):
+    if NUMBER_WITH_UNIT_REGEX.fullmatch(core) or MULTIPLIER_TOKEN_REGEX.fullmatch(core):
         return False
-    if any(ch.isdigit() for ch in core) or any(ch in "'\"`" for ch in core):
+    if any(ch.isdigit() for ch in core):
         return True
     return CASE_FLIP_REGEX.search(core) is not None
 
@@ -533,7 +576,16 @@ def _strip_chat_line_header(line_words: List[RawWordBox]) -> List[RawWordBox]:
             remaining = list(line_words[idx:])
     else:
         first_tok = line_words[0].text.strip()
-        if ":" in first_tok and not CHAT_TIME_REGEX.match(first_tok):
+        full_line_text = " ".join(w.text.strip() for w in line_words if w.text.strip())
+        if (
+            first_tok.startswith("@")
+            and len(first_tok) > 1
+            and any(ch.isalpha() for ch in first_tok)
+            and n >= 2
+            and not is_chat_metadata_line(full_line_text)
+        ):
+            remaining = list(line_words[1:])
+        elif ":" in first_tok and not CHAT_TIME_REGEX.match(first_tok):
             prefix, rest = first_tok.split(":", 1)
             if _looks_like_player_nick(prefix):
                 if not rest.strip():
@@ -581,13 +633,18 @@ def merge_ocr_boxes_into_paragraphs(raw_boxes: List[RawWordBox]) -> List[RawWord
         line = stripped_line
         if not line:
             continue
+        line_text = normalize_ocr_confusables(
+            " ".join(w.text.strip() for w in line if w.text.strip())
+        )
+        if not line_text:
+            continue
         merged_lines.append(
             RawWordBox(
                 x1=min(w.x1 for w in line),
                 y1=min(w.y1 for w in line),
                 x2=max(w.x2 for w in line),
                 y2=max(w.y2 for w in line),
-                text=" ".join(w.text.strip() for w in line if w.text.strip()),
+                text=line_text,
                 score=min(w.score for w in line),
                 lines_merged=1,
                 font_px=estimate_font_px(line),

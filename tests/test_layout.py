@@ -12,6 +12,7 @@ from ghosttranslate.ocr.layout import (
     is_valid_english_box,
     looks_like_garbled_latin,
     merge_ocr_boxes_into_paragraphs,
+    normalize_ocr_confusables,
     russian_reading_wins,
 )
 
@@ -179,10 +180,19 @@ class OcrLineTests(unittest.TestCase):
         res5 = _strip_chat_line_header(line5)
         self.assertEqual([w.text for w in res5], ["Warning:", "low", "health"])
 
+        # Ответ в Discord с обращением @Nick в начале строки: @Nick срезается, остаётся сообщение.
+        line6 = ocr_line(0, 200, [(40, 45, 13, "@Nick"), (92, 40, 13, "hello"), (138, 45, 13, "there")])
+        res6 = _strip_chat_line_header(line6)
+        self.assertEqual([w.text for w in res6], ["hello", "there"])
+        self.assertEqual(res6[0].x1, 92)
+        paras6 = merge_ocr_boxes_into_paragraphs(line6)
+        self.assertEqual([p.text for p in paras6], ["hello there"])
+
     def test_overlapping_rapidocr_lines_still_form_a_paragraph(self):
         # Рамки RapidOCR у текста с обводкой: 22 px при шаге строк 16 px.
-        words = [box(57, 81, 60, 22, "still"), box(122, 81, 40, 22, "too"), box(167, 81, 40, 22, "less"),
+        words = [box(57, 81, 60, 22, "still"), box(122, 81, 40, 22, "still"), box(167, 81, 40, 22, "less"),
                  box(72, 97, 50, 22, "about"), box(127, 97, 55, 22, "feared")]
+        words[1].text = "too"
         texts = [p.text for p in merge_ocr_boxes_into_paragraphs(words)]
         self.assertEqual(texts, ["still too less about feared"])
 
@@ -216,8 +226,18 @@ class EnglishBoxFilterTests(unittest.TestCase):
             self.assertFalse(is_valid_english_box(text), text)
         self.assertTrue(is_valid_english_box("Search in r/Battlefield6"))
 
+    def test_discord_chat_headers_are_filtered_out(self):
+        for header in (
+            "17 [d1s] k1r1to 20:51",
+            "Serega [D1S] 22:02",
+            "@Dr. Mysterion (Loki Enthusiast)",
+            "Mee6 BOT",
+            "Helper ГОТ",
+        ):
+            self.assertFalse(is_valid_english_box(header), header)
+
     def test_number_with_unit_is_not_ocr_garbage(self):
-        for text in ("3mo", "24h", "1.2k"):
+        for text in ("3mo", "24h", "1.2k", "x1", "x10"):
             self.assertFalse(looks_like_garbled_latin(text), text)
 
 
@@ -243,7 +263,7 @@ class RussianFilterTests(unittest.TestCase):
     def test_typical_english_ocr_garbage(self):
         for text in ("6ar'-1", "cnpaBhTb", "nanKa", "HyxeH,"):
             self.assertTrue(looks_like_garbled_latin(text), text)
-        for text in ("Settings", "IDE", "on-demand", "README"):
+        for text in ("Settings", "IDE", "on-demand", "README", "Can't", "I'll", "don't", "deadpool's", "x1"):
             self.assertFalse(looks_like_garbled_latin(text), text)
 
     def test_english_word_read_as_cyrillic_stays(self):

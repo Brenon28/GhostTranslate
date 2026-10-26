@@ -1,3 +1,4 @@
+import difflib
 import re
 from typing import Dict, Optional, Tuple
 
@@ -125,7 +126,8 @@ GAME_UI_DICT: Dict[str, str] = {
     "unequip": "СНЯТЬ",
     "equip item": "ЭКИПИРОВАТЬ",
     "drop item": "ВЫБРОСИТЬ",
-    "upgrade": "УЛУЧШИТЬ",
+    "upgrade": "Улучшение",
+    "upgrades": "Улучшения",
     "craft": "СОЗДАТЬ",
     "dismantle": "РАЗОБРАТЬ",
     "buy": "КУПИТЬ",
@@ -150,7 +152,7 @@ GAME_UI_DICT: Dict[str, str] = {
     "invite": "ПРИГЛАСИТЬ",
     "join": "ПРИСОЕДИНИТЬСЯ",
     "leave": "ПОКИНУТЬ",
-    # RPG и интерфейс
+    # RPG, стратегия, башни и интерфейс
     "inventory": "ИНВЕНТАРЬ",
     "character": "ПЕРСОНАЖ",
     "skills": "НАВЫКИ",
@@ -184,6 +186,24 @@ GAME_UI_DICT: Dict[str, str] = {
     "victory": "ПОБЕДА",
     "defeat": "ПОРАЖЕНИЕ",
     "draw": "НИЧЬЯ",
+    "towers": "Башни",
+    "tower": "Башня",
+    "demons": "Демоны",
+    "demon": "Демон",
+    "blockade": "Блокада",
+    "cost": "Стоимость",
+    "constructs": "Постройки",
+    "construct": "Постройка",
+    "barricade": "Баррикада",
+    "barricades": "Баррикады",
+    "can't attack": "Не может атаковать",
+    "cannot attack": "Не может атаковать",
+    "respawn time": "Время возрождения",
+    "cooldown": "Перезарядка",
+    "attack speed": "Скорость атаки",
+    "damage": "Урон",
+    "health": "Здоровье",
+    "range": "Дальность",
     "clients and partners": "Клиенты и партнеры",
     "contacts": "Контакты",
     "projects": "Проекты",
@@ -220,7 +240,6 @@ GAME_UI_DICT: Dict[str, str] = {
     "wait": "Подождите",
     "wait for me": "Подождите меня",
     "follow me": "За мной",
-    "help": "Помогите",
     "need help": "Нужна помощь",
     "help me": "Помогите мне",
     "need ammo": "Нужны патроны",
@@ -264,8 +283,40 @@ GAME_UI_DICT: Dict[str, str] = {
 }
 
 
+def lookup_game_ui_dict(text: str) -> Optional[str]:
+    """Мгновенный поиск по GAME_UI_DICT: точный, без окончания -s/-es и нечеткий (cutoff=0.82)."""
+    if not text:
+        return None
+    low = " ".join(text.strip().lower().split())
+    if not low:
+        return None
+
+    # 1. Точное совпадение
+    if low in GAME_UI_DICT:
+        return GAME_UI_DICT[low]
+
+    words = low.split()
+    # 2. Проверка единственного числа без окончания -s / -es для одиночных слов
+    if len(words) == 1 and len(low) >= 4:
+        if low.endswith("es") and low[:-2] in GAME_UI_DICT:
+            return GAME_UI_DICT[low[:-2]]
+        if low.endswith("s") and low[:-1] in GAME_UI_DICT:
+            return GAME_UI_DICT[low[:-1]]
+
+    # 3. Нечеткий поиск для строк из 1-2 слов длиной >= 5 символов (опечатки OCR в 1-2 буквах)
+    if 1 <= len(words) <= 2 and len(low) >= 5:
+        matches = difflib.get_close_matches(low, GAME_UI_DICT.keys(), n=3, cutoff=0.82)
+        if matches:
+            if low.endswith("s"):
+                for cand in matches:
+                    if cand.endswith("s"):
+                        return GAME_UI_DICT[cand]
+            return GAME_UI_DICT[matches[0]]
+    return None
+
+
 # ==============================================================================
-# ШАБЛОНЫ С ЧИСЛАМИ: «35m ago», «471 upvotes». Модель переводит их как «35 лет назад».
+# ШАБЛОНЫ С ЧИСЛАМИ: «35m ago», «471 upvotes», «16.0s Respawn Time», «Barricade x1».
 # ==============================================================================
 def russian_plural(count: int, one: str, few: str, many: str) -> str:
     tail100, tail10 = count % 100, count % 10
@@ -301,6 +352,9 @@ COUNT_NOUNS: Dict[str, Tuple[str, str, str]] = {
 }
 AGO_REGEX = re.compile(r"(\d+)\s*(s|sec|m|min|h|hr|d|w|mo|y|yr)s?\s+ago", re.IGNORECASE)
 COUNT_REGEX = re.compile(r"([\d.,]+[kKmM]?)\s+([a-zA-Z]+)")
+RESPAWN_TIME_REGEX = re.compile(r"(\d+(?:\.\d+)?)\s*s\s+respawn\s+time", re.IGNORECASE)
+COOLDOWN_TIME_REGEX = re.compile(r"(\d+(?:\.\d+)?)\s*s\s+cooldown", re.IGNORECASE)
+BARRICADE_MULT_REGEX = re.compile(r"barricade\s+x\s*(\d+)", re.IGNORECASE)
 
 
 def _singular(noun: str) -> str:
@@ -311,13 +365,23 @@ def _singular(noun: str) -> str:
 
 
 def translate_ui_pattern(text: str) -> Optional[str]:
-    """Перевод счётчиков и «N ago» без модели; None, если текст не похож на шаблон."""
-    match = AGO_REGEX.fullmatch(text.strip())
+    """Перевод счётчиков, таймеров перезарядки и «N ago» без модели; None, если не шаблон."""
+    stripped = re.sub(r"^[@©®¤§°•·]+\s*(?=\d)", "", text.strip())
+    match = RESPAWN_TIME_REGEX.fullmatch(stripped)
+    if match:
+        return f"{match.group(1)} с Время возрождения"
+    match = COOLDOWN_TIME_REGEX.fullmatch(stripped)
+    if match:
+        return f"{match.group(1)} с Перезарядка"
+    match = BARRICADE_MULT_REGEX.fullmatch(stripped)
+    if match:
+        return f"Баррикада x{match.group(1)}"
+    match = AGO_REGEX.fullmatch(stripped)
     if match:
         count = int(match.group(1))
         unit = AGO_UNITS[match.group(2).lower()]
         return f"{count} {russian_plural(count, *unit)} назад"
-    match = COUNT_REGEX.fullmatch(text.strip())
+    match = COUNT_REGEX.fullmatch(stripped)
     if match and _singular(match.group(2)) in COUNT_NOUNS:
         number = match.group(1)
         digits = number.replace(",", "").replace(".", "")

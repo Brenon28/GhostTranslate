@@ -59,7 +59,9 @@ class FloatingToolbar(QWidget):
         self.current_ocr = DEFAULT_OCR_BACKEND
         self.current_style = DEFAULT_RENDER_STYLE
         self.current_timer_scan_mode = (
-            timer_scan_mode if timer_scan_mode in ("smart_grid", "forced_full") else DEFAULT_TIMER_SCAN_MODE
+            timer_scan_mode
+            if timer_scan_mode in ("smart_grid", "forced_full", "turbo_chat")
+            else DEFAULT_TIMER_SCAN_MODE
         )
 
         self.collapse_timer = QTimer(self)
@@ -277,18 +279,24 @@ class FloatingToolbar(QWidget):
         if self.current_timer_scan_mode == "forced_full":
             self.btn_timer_mode.setText("Скан: Тик")
             self.btn_timer_mode.setToolTip(
-                "Режим обновления таймера: Принудительный каждый тик (Макс. точность). "
-                "Нажмите для переключения в Умный по зонам (Экономия CPU)"
+                "Режим обновления таймера: 2. Тик (Точный 1.5x). "
+                "Нажмите для переключения в 3. Турбо-чат (Без 1.5x апскейла)"
+            )
+        elif self.current_timer_scan_mode == "turbo_chat":
+            self.btn_timer_mode.setText("Скан: Турбо")
+            self.btn_timer_mode.setToolTip(
+                "Режим обновления таймера: 3. Турбо-чат (Без 1.5x апскейла). "
+                "Нажмите для переключения в 1. Зоны (Эконом)"
             )
         else:
             self.btn_timer_mode.setText("Скан: Зоны")
             self.btn_timer_mode.setToolTip(
-                "Режим обновления таймера: Умный по зонам (Экономия CPU). "
-                "Нажмите для переключения в Принудительный каждый тик (Макс. точность)"
+                "Режим обновления таймера: 1. Зоны (Эконом). "
+                "Нажмите для переключения в 2. Тик (Точный 1.5x)"
             )
 
     def set_timer_scan_mode(self, mode: str) -> None:
-        normalized = mode if mode in ("smart_grid", "forced_full") else DEFAULT_TIMER_SCAN_MODE
+        normalized = mode if mode in ("smart_grid", "forced_full", "turbo_chat") else DEFAULT_TIMER_SCAN_MODE
         if normalized == self.current_timer_scan_mode:
             return
         self.current_timer_scan_mode = normalized
@@ -296,8 +304,12 @@ class FloatingToolbar(QWidget):
         self.reposition()
 
     def _on_toggle_timer_scan_mode(self) -> None:
-        next_mode = "forced_full" if self.current_timer_scan_mode == "smart_grid" else "smart_grid"
-        self.current_timer_scan_mode = next_mode
+        order = ("smart_grid", "forced_full", "turbo_chat")
+        try:
+            idx = order.index(self.current_timer_scan_mode)
+        except ValueError:
+            idx = 0
+        self.current_timer_scan_mode = order[(idx + 1) % len(order)]
         self._update_timer_mode_button()
         self.reposition()
         self.timer_scan_mode_toggled.emit(self.current_timer_scan_mode)

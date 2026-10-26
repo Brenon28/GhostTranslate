@@ -5,10 +5,15 @@ import wave
 from pathlib import Path
 
 import numpy as np
+from PyQt6.QtCore import QRect
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ghosttranslate.models import OverlayBlock
+from ghosttranslate.settings import FontCustomConfig
 from ghosttranslate.sounds import SAMPLE_RATE, render_chime
+from ghosttranslate.ui.plaque_layout import layout_blocks
 from ghosttranslate.ui.toolbar import FloatingToolbar
 
 APP = QApplication.instance() or QApplication(sys.argv)
@@ -45,6 +50,55 @@ class ToolbarWidthTests(unittest.TestCase):
         self.toolbar.set_hotkey_labels("Ctrl+Alt+H", "Ctrl+Alt+T")
         self.assertEqual(self.toolbar.btn_region.text(), "Область [Ctrl+Alt+T]")
         self.assertEqual(self.toolbar.btn_clear.text(), "Скрыть [Ctrl+Alt+H]")
+
+    def test_scan_mode_button_cycles_three_modes(self):
+        self.assertEqual(self.toolbar.btn_timer_mode.text(), "Скан: Зоны")
+        self.toolbar._on_toggle_timer_scan_mode()
+        self.assertEqual(self.toolbar.current_timer_scan_mode, "forced_full")
+        self.assertEqual(self.toolbar.btn_timer_mode.text(), "Скан: Тик")
+        self.toolbar._on_toggle_timer_scan_mode()
+        self.assertEqual(self.toolbar.current_timer_scan_mode, "turbo_chat")
+        self.assertEqual(self.toolbar.btn_timer_mode.text(), "Скан: Турбо")
+        self.toolbar._on_toggle_timer_scan_mode()
+        self.assertEqual(self.toolbar.current_timer_scan_mode, "smart_grid")
+        self.assertEqual(self.toolbar.btn_timer_mode.text(), "Скан: Зоны")
+
+
+class PlaqueLayoutNoCascadeTests(unittest.TestCase):
+    def test_upper_description_never_pushes_lower_plaque_down(self):
+        color = QColor(20, 20, 20)
+        fg = QColor(240, 240, 240)
+        upper = OverlayBlock(
+            rect=QRect(100, 100, 200, 45),
+            orig_text="Constructs a heavy demonic barricade that blocks enemy pathing and absorbs damage",
+            trans_text=(
+                "Возводит тяжелую демоническую баррикаду, которая блокирует путь врагам "
+                "и поглощает входящий урон от всех наземных атак противника"
+            ),
+            bg_color=color,
+            bg_color_right=color,
+            fg_color=fg,
+            lines_merged=3,
+            is_pending=False,
+            font_px=14,
+        )
+        lower = OverlayBlock(
+            rect=QRect(100, 155, 200, 22),
+            orig_text="Can't Attack",
+            trans_text="Не может атаковать",
+            bg_color=color,
+            bg_color_right=color,
+            fg_color=fg,
+            lines_merged=1,
+            is_pending=False,
+            font_px=14,
+        )
+        cfg = FontCustomConfig()
+        layouts = layout_blocks([upper, lower], cfg, "wrap_gradient", QRect(0, 0, 1920, 1080))
+        self.assertEqual(len(layouts), 2)
+        self.assertEqual(layouts[0].rect.top(), 100)
+        self.assertLessEqual(layouts[0].rect.bottom(), 155)
+        self.assertEqual(layouts[1].rect.top(), 155)
 
 
 class ChimeTests(unittest.TestCase):

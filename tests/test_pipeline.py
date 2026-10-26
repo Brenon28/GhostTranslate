@@ -9,10 +9,12 @@ from PyQt6.QtCore import QRect, QTimer
 from PyQt6.QtGui import QColor
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ghosttranslate.config import PIXEL_DIFF_THRESHOLD
+from ghosttranslate.config import PIXEL_DIFF_THRESHOLD, TURBO_PIXEL_DIFF_THRESHOLD
 from ghosttranslate.controller import GhostTranslateController
+from ghosttranslate.game_dict import lookup_game_ui_dict, translate_ui_pattern
 from ghosttranslate.models import OverlayBlock
 from ghosttranslate.ocr.imaging import max_grid_diff_numpy
+from ghosttranslate.ocr.layout import normalize_ocr_confusables
 from ghosttranslate.translator import NativeCT2Translator, TranslationLRUCache, preprocess_english_text
 
 
@@ -47,16 +49,40 @@ class TranslatorFallbackTests(unittest.TestCase):
         self.assertEqual(preprocess_english_text("Ill"), "Ill")
         self.assertEqual(preprocess_english_text("Press U to open"), "Press U to open")
         self.assertEqual(preprocess_english_text("Press R"), "Press R")
+        self.assertEqual(preprocess_english_text("I js played today"), "I just played today")
+        self.assertEqual(
+            preprocess_english_text("y'all cute as hell ngl"),
+            "you all very cute not going to lie",
+        )
+        self.assertEqual(
+            preprocess_english_text("anouncer and racoon are lil prolly def fr"),
+            "announcer and raccoon are little probably definitely for real",
+        )
+
+    def test_ocr_confusables_and_ui_patterns_and_fuzzy_dict(self):
+        self.assertEqual(normalize_ocr_confusables("Llpgrades"), "Upgrades")
+        self.assertEqual(normalize_ocr_confusables("Llnlock Llnit"), "Unlock Unit")
+        self.assertEqual(normalize_ocr_confusables("@ 16.0s Respawn Time"), "16.0s Respawn Time")
+        self.assertEqual(translate_ui_pattern("@ 16.0s Respawn Time"), "16.0 с Время возрождения")
+        self.assertEqual(translate_ui_pattern("12.5s Cooldown"), "12.5 с Перезарядка")
+        self.assertEqual(translate_ui_pattern("Barricade x1"), "Баррикада x1")
+        self.assertEqual(lookup_game_ui_dict("llpgrades"), "Улучшения")
+        self.assertEqual(lookup_game_ui_dict("Can't Attack"), "Не может атаковать")
 
     def test_quick_chat_phrases_from_game_dict(self):
         translator = NativeCT2Translator()
-        result = translator.translate_batch(["gg wp", "need ammo", "on my way"])
+        result = translator.translate_batch(
+            ["gg wp", "need ammo", "on my way", "Llpgrades", "Can't Attack", "@ 16.0s Respawn Time"]
+        )
         self.assertEqual(
             result,
             [
                 ("Хорошая игра, отлично сыграно", True),
                 ("Нужны патроны", True),
                 ("Уже иду", True),
+                ("Улучшения", True),
+                ("Не может атаковать", True),
+                ("16.0 с Время возрождения", True),
             ],
         )
 
@@ -72,8 +98,9 @@ class GridDiffAndTimerModeTests(unittest.TestCase):
         grid_max = max_grid_diff_numpy(curr_gray, prev_gray)
         self.assertLess(whole_mean, 1.0)
         self.assertGreaterEqual(grid_max, PIXEL_DIFF_THRESHOLD)
+        self.assertLess(TURBO_PIXEL_DIFF_THRESHOLD, PIXEL_DIFF_THRESHOLD)
 
-    def test_timer_scan_modes_smart_grid_and_forced_full(self):
+    def test_timer_scan_modes_smart_grid_and_forced_full_and_turbo_chat(self):
         ctrl = SimpleNamespace(
             monitor_interval_ms=500,
             is_hidden=False,
@@ -87,6 +114,11 @@ class GridDiffAndTimerModeTests(unittest.TestCase):
         ctrl.font_cfg.timer_scan_mode = "forced_full"
         GhostTranslateController.on_auto_monitor_tick(ctrl)
         ctrl._trigger_capture_pipeline.assert_called_once_with(check_static=False)
+
+        ctrl._trigger_capture_pipeline.reset_mock()
+        ctrl.font_cfg.timer_scan_mode = "turbo_chat"
+        GhostTranslateController.on_auto_monitor_tick(ctrl)
+        ctrl._trigger_capture_pipeline.assert_called_once_with(check_static=True)
 
     def test_persistent_blocks_require_exact_text_match(self):
         old_block = block("need ammo at A", pending=False)

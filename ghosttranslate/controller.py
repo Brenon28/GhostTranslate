@@ -31,6 +31,7 @@ from .config import (
     SEQ_MATCH_THRESHOLD,
     TRANSLATE_CHUNK_BLOCKS,
     TRANSLATION_ENGINE,
+    TURBO_PIXEL_DIFF_THRESHOLD,
     UPDATE_CHECK_DELAY_MS,
     VK_ESCAPE,
     WATCHDOG_CHAT_VERT_PAD_PX,
@@ -52,7 +53,7 @@ from .screens import (
 )
 from .settings import FontCustomConfig
 from .sounds import play_shutdown_sound_sync, play_startup_sound
-from .translator import TranslationLRUCache
+from .translator import NATIVE_CT2, TranslationLRUCache
 from .ui.font_popup import FontSettingsPopup
 from .ui.log_dialog import LogViewerDialog
 from .ui.overlay import ScreenOverlay
@@ -129,7 +130,7 @@ class GhostTranslateController(QWidget):
         self._frame_region: Optional[Dict[str, int]] = None
         # Последнее активное окно чужой программы: «Весь экран» переводит его монитор.
         self._last_external_hwnd: int = 0
-        self.ocr_engine = LazyRapidOCR() if HAS_RAPIDOCR else None
+        self.ocr_engine = LazyRapidOCR(self.font_cfg.cpu_power_mode) if HAS_RAPIDOCR else None
         if self.ocr_engine is not None and (self.ocr_backend == "RapidOCR" or not HAS_WINOCR):
             self.ocr_engine.preload()
         self.lru_cache = TranslationLRUCache(LRU_MAX_SIZE)
@@ -138,7 +139,7 @@ class GhostTranslateController(QWidget):
         self.ocr_thread: Optional[OcrWorkerThread] = None
         self.trans_thread: Optional[NativeCT2TranslationWorker] = None
 
-        self.model_loader = ModelLoaderThread()
+        self.model_loader = ModelLoaderThread(self.font_cfg.cpu_power_mode)
         self.model_loader.loaded.connect(self._on_model_loaded)
         self._track_thread(self.model_loader)
         self.model_loader.start()
@@ -169,6 +170,7 @@ class GhostTranslateController(QWidget):
         self.font_popup.hotkey_capture_active.connect(self._set_hotkeys_suspended)
         self.font_popup.game_mode_changed.connect(self._on_game_mode_changed)
         self.font_popup.timer_scan_mode_changed.connect(self._on_timer_scan_mode_changed)
+        self.font_popup.cpu_power_mode_changed.connect(self._on_cpu_power_mode_changed)
 
         self.log_dialog = LogViewerDialog()
         self.log_dialog.btn_copy.clicked.connect(self.export_and_copy_logs)
@@ -470,6 +472,12 @@ class GhostTranslateController(QWidget):
         self.font_cfg.save()
         self.font_popup.set_timer_scan_mode(mode)
         log_event(f"Режим обновления таймера переключен с панели на: {mode}")
+
+    def _on_cpu_power_mode_changed(self, mode: str) -> None:
+        NATIVE_CT2.set_cpu_power_mode(mode)
+        if self.ocr_engine is not None:
+            self.ocr_engine.set_cpu_power_mode(mode)
+        log_event(f"Режим мощности CPU переключен на: {mode}")
 
     # --------------------------------------------------------------------------
     # ПОТОКИ: ССЫЛКА ДЕРЖИТСЯ ДО finished, ИНАЧЕ QThread УДАЛЯЕТСЯ ВО ВРЕМЯ run()
@@ -1023,6 +1031,7 @@ class GhostTranslateController(QWidget):
             return
 
         small_gray = compute_small_gray_numpy(img_bgra)
+        scan_mode = getattr(self.font_cfg, "timer_scan_mode", "smart_grid")
 
         if (
             check_static
@@ -1030,7 +1039,10 @@ class GhostTranslateController(QWidget):
             and small_gray.shape == self.prev_small_gray.shape
         ):
             diff = max_grid_diff_numpy(small_gray, self.prev_small_gray)
-            if diff < PIXEL_DIFF_THRESHOLD:
+            threshold = (
+                TURBO_PIXEL_DIFF_THRESHOLD if scan_mode == "turbo_chat" else PIXEL_DIFF_THRESHOLD
+            )
+            if diff < threshold:
                 self._schedule_next_monitor_tick()
                 return
 
@@ -1055,6 +1067,7 @@ class GhostTranslateController(QWidget):
             dpi_scale=self._last_capture_dpr,
             offset_x=local_rect.x(),
             offset_y=local_rect.y(),
+            scan_mode=scan_mode,
         )
         self.ocr_thread.blocks_ready.connect(self._on_ocr_blocks_ready)
         self.ocr_thread.finished.connect(self._on_ocr_thread_finished)

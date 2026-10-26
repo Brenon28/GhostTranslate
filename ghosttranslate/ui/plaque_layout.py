@@ -90,21 +90,23 @@ def _fit_in_slot(
     src_inner_w: int,
     room_w: int,
     paragraph: bool,
+    src_h: int = 0,
 ) -> Optional[Tuple[QFont, bool, int]]:
     """Кегль, при котором перевод не выходит за полосу до следующей строки текста.
 
     Строка чата или списка: сперва в ширину оригинала с лёгким ужатием, потом шире,
     до соседнего текста или края, и мельче, вплоть до MIN_READABLE_FONT_PX. Абзац
-    переносится в своей ширине. None — не влезает и при самом мелком читаемом кегле.
+    переносится в своей ширине или с расширением до 1.25x.
     """
-    inner_h = slot_h - 2 * PAD_Y
+    max_allowed_h = max(src_h, slot_h - 2) if src_h > 0 else max(1, slot_h - 2)
+    inner_h = max(1, max_allowed_h - 2 * PAD_Y)
+    expanded_para_w = min(room_w, max(src_inner_w, int(src_inner_w * 1.25)))
     if paragraph:
-        # Без полей: две строки по 12 px занимают 32 px при шаге строк чата около 17 px,
-        # а нижний край строки шрифта — это хвосты букв, а не сами буквы.
-        for px in range(base_px, MIN_READABLE_FONT_PX - 1, -1):
-            font = _make_font(font_cfg, px)
-            if _wrapped_height(font, src_inner_w, text) <= slot_h:
-                return font, True, src_inner_w
+        for cand_w in (src_inner_w, expanded_para_w):
+            for px in range(base_px, MIN_READABLE_FONT_PX - 1, -1):
+                font = _make_font(font_cfg, px)
+                if _wrapped_height(font, cand_w, text) <= max_allowed_h:
+                    return font, True, cand_w
         return None
     for limit_w, lowest_px in ((src_inner_w, floor_px), (room_w, MIN_READABLE_FONT_PX)):
         for px in range(base_px, lowest_px - 1, -1):
@@ -112,6 +114,11 @@ def _fit_in_slot(
             fm = QFontMetrics(font)
             if fm.horizontalAdvance(text) <= limit_w and fm.tightBoundingRect(text).height() <= inner_h:
                 return font, False, max(src_inner_w, fm.horizontalAdvance(text))
+    for cand_w in (expanded_para_w, room_w):
+        for px in range(base_px, MIN_READABLE_FONT_PX - 1, -1):
+            font = _make_font(font_cfg, px)
+            if _wrapped_height(font, cand_w, text) <= max_allowed_h:
+                return font, True, cand_w
     return None
 
 
@@ -126,11 +133,9 @@ def layout_plaque(
 ) -> PlaqueLayout:
     """Плашка закрывает оригинал целиком; перевод начинается там же, где начинался текст.
 
-    Если сразу под текстом другая строка (slot_h), плашка подбирает кегль под свою полосу:
-    в чате и списке выросшая вниз плашка сдвигала бы все строки ниже.
-    Иначе не влезающий перевод сначала чуть ужимается. Подпись в одну строку затем занимает
-    свободное место до соседнего текста и только потом переносится; абзац растёт вниз.
-    Шрифт мельче MIN_READABLE_FONT_PX не берётся: прежде длинный абзац ужимался до 8 px.
+    Если сразу под текстом другая строка (slot_h), плашка подбирает кегль под свою полосу
+    и жестко ограничивается по высоте max_allowed_h = max(src.height(), slot_h - 2),
+    чтобы никогда не наезжать на нижний блок и не сдвигать его вниз.
     """
     src = block.rect
     text = block.trans_text
@@ -143,23 +148,29 @@ def layout_plaque(
     src_inner_w = max(8, src.width())
     start_x = left_edge if font_cfg.text_align == "center" else src.left() - PAD_X
     room_w = max(src_inner_w, right_edge - start_x - 2 * PAD_X)
+    max_allowed_h = max(src.height(), slot_h - 2) if slot_h is not None else None
 
     fitted = None
     if slot_h is not None and not font_cfg.use_fixed_pt:
         paragraph = block.lines_merged >= 2
-        fitted = _fit_in_slot(text, font_cfg, base_px, floor_px, slot_h, src_inner_w, room_w, paragraph)
+        fitted = _fit_in_slot(
+            text, font_cfg, base_px, floor_px, slot_h, src_inner_w, room_w, paragraph, src.height()
+        )
     if fitted is not None:
         font, wrap, width = fitted
         if not wrap:
             # Высоту до шага строк поджимает _fit_to_row: она же ставит буквы по центру.
             text_h = QFontMetrics(font).height()
             flags = int(Qt.AlignmentFlag.AlignVCenter)
-            return _place(block, font, flags, text, width, text_h, centered, font_cfg, left_edge, right_edge)
+            lay = _place(block, font, flags, text, width, text_h, centered, font_cfg, left_edge, right_edge)
+            if max_allowed_h is not None and lay.rect.height() > max_allowed_h:
+                lay.rect.setHeight(max_allowed_h)
+            return lay
         flags = int(Qt.AlignmentFlag.AlignTop) | int(Qt.TextFlag.TextWordWrap) | int(Qt.TextFlag.TextDontClip)
         lay = _place(block, font, flags, text, width, _wrapped_height(font, width, text), centered,
                      font_cfg, left_edge, right_edge)
-        if lay.rect.height() > slot_h:
-            lay.rect.setHeight(slot_h)
+        if max_allowed_h is not None and lay.rect.height() > max_allowed_h:
+            lay.rect.setHeight(max_allowed_h)
         return lay
 
     font = _make_font(font_cfg, base_px)
@@ -191,9 +202,13 @@ def layout_plaque(
     flags = int(Qt.AlignmentFlag.AlignVCenter)
     if wrap:
         width = wrap_w
-        for px in range(base_px, floor_px - 1, -1):
+        target_h = (max_allowed_h - 2 * PAD_Y) if max_allowed_h is not None else (src.height() - 2 * PAD_Y)
+        lowest_wrap_px = MIN_READABLE_FONT_PX if (slot_h is not None and not font_cfg.use_fixed_pt) else floor_px
+        if slot_h is not None and width < min(room_w, int(src_inner_w * 1.25)):
+            width = min(room_w, max(src_inner_w, int(src_inner_w * 1.25)))
+        for px in range(base_px, lowest_wrap_px - 1, -1):
             font = _make_font(font_cfg, px)
-            if _wrapped_height(font, width, text) <= src.height() - 2 * PAD_Y:
+            if _wrapped_height(font, width, text) <= target_h:
                 break
         text_h = _wrapped_height(font, width, text)
         flags = int(Qt.AlignmentFlag.AlignTop) | int(Qt.TextFlag.TextWordWrap)
@@ -204,7 +219,10 @@ def layout_plaque(
         if not can_wrap and width > room_w:
             width = room_w
             text = QFontMetrics(font).elidedText(text, Qt.TextElideMode.ElideRight, width)
-    return _place(block, font, flags, text, width, text_h, centered, font_cfg, left_edge, right_edge)
+    lay = _place(block, font, flags, text, width, text_h, centered, font_cfg, left_edge, right_edge)
+    if max_allowed_h is not None and lay.rect.height() > max_allowed_h:
+        lay.rect.setHeight(max_allowed_h)
+    return lay
 
 
 def _place(
@@ -354,12 +372,7 @@ def layout_blocks(
     style_mode: str,
     bounds: QRect,
 ) -> List[PlaqueLayout]:
-    """Раскладка всех плашек кадра сверху вниз.
-
-    Выросший вниз перевод не закрывает следующий абзац: плашки ниже сдвигаются
-    под него, как строки при переносе текста. Плашки одной строки не трогаются.
-    Строка раскладывается слева направо: перевод соседа слева бывает шире его оригинала.
-    """
+    """Раскладка всех плашек кадра строго на координатах оригинала без каскадного сдвига вниз."""
     layouts: List[PlaqueLayout] = []
     for block in sorted(blocks, key=lambda b: b.rect.left()):
         if block.is_pending:
@@ -381,25 +394,9 @@ def layout_blocks(
         if not lay.flags & int(Qt.TextFlag.TextWordWrap):
             room = slot_h if slot_h is not None else _row_room(lay, blocks)
             if room is not None and lay.rect.height() > room:
-                _fit_to_row(lay, room, font_cfg)
+                max_row_h = max(block.rect.height(), room - 2) if slot_h is not None else room
+                _fit_to_row(lay, max_row_h, font_cfg)
         layouts.append(lay)
 
     layouts.sort(key=lambda lay: (lay.block.rect.top(), lay.block.rect.left()))
-    placed: List[PlaqueLayout] = []
-    for lay in layouts:
-        for _ in range(len(placed) + 1):
-            blocker = next(
-                (
-                    other
-                    for other in placed
-                    if other.block.rect.top() < lay.block.rect.top() - 2
-                    and not _same_row(other.block.rect, lay.block.rect)
-                    and _stacks_over(lay.rect, other.rect)
-                ),
-                None,
-            )
-            if blocker is None:
-                break
-            lay.move_down(blocker.rect.bottom() + STACK_GAP_PX - lay.rect.top() + 1)
-        placed.append(lay)
-    return placed
+    return layouts

@@ -1,5 +1,6 @@
 """Пересчёт логических координат Qt в физические пиксели монитора."""
 
+import threading
 from typing import Dict, Iterable, Optional, Tuple
 
 import mss
@@ -12,6 +13,46 @@ def open_mss():
     """mss 10 переименовал mss.mss в mss.MSS; requirements допускают и 9.x."""
     factory = getattr(mss, "MSS", None) or mss.mss
     return factory()
+
+
+def mss_monitor(region: Dict[str, int]) -> Dict[str, int]:
+    """Область mss без обрезки отрицательного левого монитора."""
+    return {
+        "left": int(region["left"]),
+        "top": int(region["top"]),
+        "width": max(1, int(region["width"])),
+        "height": max(1, int(region["height"])),
+    }
+
+
+class ThreadLocalMss:
+    """Контекст GDI живёт в потоке, который вызывает grab, и открывается заново при смене потока."""
+
+    def __init__(self):
+        self._instance = None
+        self._owner_thread_id: Optional[int] = None
+
+    def grab(self, region: Dict[str, int]):
+        self._ensure()
+        return self._instance.grab(mss_monitor(region))
+
+    def close(self) -> None:
+        if self._instance is None:
+            return
+        try:
+            self._instance.close()
+        except Exception:
+            pass
+        self._instance = None
+        self._owner_thread_id = None
+
+    def _ensure(self) -> None:
+        current = threading.get_ident()
+        if self._instance is not None and self._owner_thread_id == current:
+            return
+        self.close()
+        self._instance = open_mss()
+        self._owner_thread_id = current
 
 
 def screen_at_native_point(screens: Iterable[QScreen], x: int, y: int) -> Optional[QScreen]:

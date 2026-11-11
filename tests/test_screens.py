@@ -6,13 +6,33 @@ import numpy as np
 from PyQt6.QtCore import QRect
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ghosttranslate.screens import crop_to_region, mask_native_rects, native_capture_region, screen_native_rect
+from ghosttranslate.ocr.imaging import clahe_light_bgra
+from ghosttranslate.screens import (
+    crop_to_region,
+    mask_native_rects,
+    mss_monitor,
+    native_capture_region,
+    screen_native_rect,
+)
 
 
 # Так Qt 6 отдаёт мониторы этой машины при масштабе 150% на основном и 125% на левом:
 # угол в физических пикселях, размер в логических.
 PRIMARY_150 = QRect(0, 0, 2293, 960)
 LEFT_125 = QRect(-1920, 140, 1536, 864)
+
+
+class CaptureRegionTests(unittest.TestCase):
+    def test_mss_monitor_keeps_negative_origin(self):
+        region = mss_monitor({"left": -1920, "top": 140, "width": 1920, "height": 1080})
+        self.assertEqual(region, {"left": -1920, "top": 140, "width": 1920, "height": 1080})
+
+    def test_dark_frame_becomes_light_background(self):
+        dark = np.zeros((48, 80, 4), dtype=np.uint8)
+        dark[:, :] = (20, 20, 25, 255)
+        light = clahe_light_bgra(dark)
+        self.assertEqual(light.shape, dark.shape)
+        self.assertGreaterEqual(float(np.median(light[:, :, :3])), 128.0)
 
 
 class ScreenMathTests(unittest.TestCase):

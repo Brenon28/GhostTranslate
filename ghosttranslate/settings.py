@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from .config import (
+    DEFAULT_CPU_POWER_MODE,
     DEFAULT_HOTKEY_SNIP,
     DEFAULT_HOTKEY_TOGGLE,
     DEFAULT_TIMER_SCAN_MODE,
@@ -14,7 +15,8 @@ from .config import (
 from .diagnostics import log_event
 from .hotkeys import parse_hotkey
 
-VALID_TIMER_SCAN_MODES = ("smart_grid", "forced_full")
+VALID_TIMER_SCAN_MODES = ("smart_grid", "forced_full", "turbo_chat")
+VALID_CPU_POWER_MODES = ("eco", "standard", "max")
 
 
 @dataclass
@@ -31,7 +33,8 @@ class FontCustomConfig:
     sound_enabled: bool = True
     # Окна не прячутся от захвата экрана, плашки гаснут на время снимка.
     game_mode: bool = False
-    timer_scan_mode: str = DEFAULT_TIMER_SCAN_MODE  # "smart_grid" | "forced_full"
+    timer_scan_mode: str = DEFAULT_TIMER_SCAN_MODE  # "smart_grid" | "forced_full" | "turbo_chat"
+    cpu_power_mode: str = DEFAULT_CPU_POWER_MODE  # "eco" | "standard" | "max"
     hotkey_toggle: str = DEFAULT_HOTKEY_TOGGLE
     hotkey_snip: str = DEFAULT_HOTKEY_SNIP
     # Середина верхнего края панели в логических координатах Qt; None — по центру основного экрана.
@@ -50,6 +53,7 @@ class FontCustomConfig:
             "sound_enabled": self.sound_enabled,
             "game_mode": self.game_mode,
             "timer_scan_mode": self.timer_scan_mode,
+            "cpu_power_mode": self.cpu_power_mode,
             "hotkey_toggle": self.hotkey_toggle,
             "hotkey_snip": self.hotkey_snip,
             "toolbar_anchor": list(self.toolbar_anchor) if self.toolbar_anchor else None,
@@ -65,6 +69,11 @@ class FontCustomConfig:
     def _timer_scan_mode_or_default(value) -> str:
         text = str(value) if value else DEFAULT_TIMER_SCAN_MODE
         return text if text in VALID_TIMER_SCAN_MODES else DEFAULT_TIMER_SCAN_MODE
+
+    @staticmethod
+    def _cpu_power_mode_or_default(value) -> str:
+        text = str(value) if value else DEFAULT_CPU_POWER_MODE
+        return text if text in VALID_CPU_POWER_MODES else DEFAULT_CPU_POWER_MODE
 
     @staticmethod
     def _anchor_or_none(value) -> Optional[Tuple[int, int]]:
@@ -94,6 +103,7 @@ class FontCustomConfig:
                     sound_enabled=bool(data.get("sound_enabled", True)),
                     game_mode=bool(data.get("game_mode", False)),
                     timer_scan_mode=cls._timer_scan_mode_or_default(data.get("timer_scan_mode")),
+                    cpu_power_mode=cls._cpu_power_mode_or_default(data.get("cpu_power_mode")),
                     hotkey_toggle=cls._hotkey_or_default(data.get("hotkey_toggle"), DEFAULT_HOTKEY_TOGGLE),
                     hotkey_snip=cls._hotkey_or_default(data.get("hotkey_snip"), DEFAULT_HOTKEY_SNIP),
                     toolbar_anchor=cls._anchor_or_none(data.get("toolbar_anchor")),

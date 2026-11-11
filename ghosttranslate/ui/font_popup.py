@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..config import APP_VERSION, FONT_FAMILIES, TIMER_SCAN_MODES
+from ..config import APP_VERSION, CPU_POWER_MODES, FONT_FAMILIES, TIMER_SCAN_MODES
 from ..hotkeys import parse_hotkey
 from ..settings import FontCustomConfig
 from ..sounds import play_startup_sound
@@ -46,6 +46,7 @@ class FontSettingsPopup(QWidget):
     hotkeys_changed = pyqtSignal()
     game_mode_changed = pyqtSignal(bool)
     timer_scan_mode_changed = pyqtSignal(str)
+    cpu_power_mode_changed = pyqtSignal(str)
     # True, пока поле клавиши ждёт нажатия: глобальные клавиши на это время снимаются.
     hotkey_capture_active = pyqtSignal(bool)
 
@@ -212,11 +213,22 @@ class FontSettingsPopup(QWidget):
         self.combo_timer_mode = QComboBox(card)
         for mode_id, mode_label in TIMER_SCAN_MODES:
             self.combo_timer_mode.addItem(mode_label, mode_id)
-        scan_mode_idx = 1 if self.font_cfg.timer_scan_mode == "forced_full" else 0
-        self.combo_timer_mode.setCurrentIndex(scan_mode_idx)
+        scan_mode_map = {mode_id: idx for idx, (mode_id, _) in enumerate(TIMER_SCAN_MODES)}
+        self.combo_timer_mode.setCurrentIndex(scan_mode_map.get(self.font_cfg.timer_scan_mode, 0))
         self.combo_timer_mode.currentIndexChanged.connect(self._on_timer_scan_mode_changed)
         row_scan_mode.addWidget(self.combo_timer_mode, 1)
         layout.addLayout(row_scan_mode)
+
+        row_cpu_mode = QHBoxLayout()
+        row_cpu_mode.addWidget(QLabel("Мощность CPU:", card))
+        self.combo_cpu_power = QComboBox(card)
+        for cpu_id, cpu_label in CPU_POWER_MODES:
+            self.combo_cpu_power.addItem(cpu_label, cpu_id)
+        cpu_mode_map = {cpu_id: idx for idx, (cpu_id, _) in enumerate(CPU_POWER_MODES)}
+        self.combo_cpu_power.setCurrentIndex(cpu_mode_map.get(self.font_cfg.cpu_power_mode, 1))
+        self.combo_cpu_power.currentIndexChanged.connect(self._on_cpu_power_mode_changed)
+        row_cpu_mode.addWidget(self.combo_cpu_power, 1)
+        layout.addLayout(row_cpu_mode)
 
         # 6. Звук и глобальные клавиши
         line = QFrame(card)
@@ -311,17 +323,31 @@ class FontSettingsPopup(QWidget):
 
     def _on_timer_scan_mode_changed(self, _idx: int):
         val = self.combo_timer_mode.currentData()
-        if val in ("smart_grid", "forced_full"):
+        if val in ("smart_grid", "forced_full", "turbo_chat"):
             self.font_cfg.timer_scan_mode = str(val)
             self.font_cfg.save()
             self.timer_scan_mode_changed.emit(self.font_cfg.timer_scan_mode)
 
     def set_timer_scan_mode(self, mode: str) -> None:
-        normalized = "forced_full" if mode == "forced_full" else "smart_grid"
-        idx = 1 if normalized == "forced_full" else 0
+        scan_mode_map = {mode_id: idx for idx, (mode_id, _) in enumerate(TIMER_SCAN_MODES)}
+        idx = scan_mode_map.get(mode, 0)
         self.combo_timer_mode.blockSignals(True)
         self.combo_timer_mode.setCurrentIndex(idx)
         self.combo_timer_mode.blockSignals(False)
+
+    def _on_cpu_power_mode_changed(self, _idx: int):
+        val = self.combo_cpu_power.currentData()
+        if val in ("eco", "standard", "max"):
+            self.font_cfg.cpu_power_mode = str(val)
+            self.font_cfg.save()
+            self.cpu_power_mode_changed.emit(self.font_cfg.cpu_power_mode)
+
+    def set_cpu_power_mode(self, mode: str) -> None:
+        cpu_mode_map = {cpu_id: idx for idx, (cpu_id, _) in enumerate(CPU_POWER_MODES)}
+        idx = cpu_mode_map.get(mode, 1)
+        self.combo_cpu_power.blockSignals(True)
+        self.combo_cpu_power.setCurrentIndex(idx)
+        self.combo_cpu_power.blockSignals(False)
 
     def _on_sound_toggled(self, checked: bool):
         self.font_cfg.sound_enabled = checked

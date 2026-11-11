@@ -17,9 +17,10 @@ try:
 except ImportError:
     HAS_NATIVE_CT2 = False
 
-from .config import APP_VERSION, BASE_DIR, LRU_MAX_SIZE
+from .config import APP_VERSION, BASE_DIR, CPU_POWER_PROFILES, DEFAULT_CPU_POWER_MODE, LRU_MAX_SIZE
 from .diagnostics import log_event
-from .game_dict import GAME_UI_DICT
+from .game_dict import GAME_UI_DICT, lookup_game_ui_dict, translate_ui_pattern
+from .ocr.layout import normalize_ocr_confusables
 
 
 # Таблица разворачивания сокращений без апострофов и игрового сленга для SentencePiece.
@@ -100,22 +101,46 @@ SLANG_AND_CONTRACTIONS: Dict[str, str] = {
     "gimme": "give me",
     "kinda": "kind of",
     "sorta": "sort of",
+    "js": "just",
+    "yall": "you all",
+    "y'all": "you all",
+    "anouncer": "announcer",
+    "racoon": "raccoon",
+    "lil": "little",
+    "prolly": "probably",
+    "def": "definitely",
+    "fr": "for real",
+    "ngl": "not going to lie",
 }
 
 SLASH_SLANG_REGEX = re.compile(r"(?<![A-Za-z0-9])(w/o|w/)(?![A-Za-z0-9])", re.IGNORECASE)
+CUTE_AS_HELL_REGEX = re.compile(r"\bcute\s+as\s+hell\b", re.IGNORECASE)
+AS_HELL_REGEX = re.compile(r"\bas\s+hell\b", re.IGNORECASE)
 WORD_TOKEN_REGEX = re.compile(r"\b[A-Za-z]+(?:'[A-Za-z]+)?\b")
 
 
 def preprocess_english_text(text: str) -> str:
-    """Нормализует сокращения без апострофов и игровой сленг перед подачей в SentencePiece."""
+    """Нормализует опечатки OCR, сокращения без апострофов и игровой сленг перед подачей в SentencePiece."""
     if not text:
         return text
+
+    stage0 = normalize_ocr_confusables(text)
 
     def _replace_slash(match: re.Match) -> str:
         tok = match.group(1).lower()
         return "without" if tok == "w/o" else "with"
 
-    stage1 = SLASH_SLANG_REGEX.sub(_replace_slash, text)
+    def _replace_cute_as_hell(match: re.Match) -> str:
+        src = match.group(0)
+        return "Very cute" if src[0].isupper() else "very cute"
+
+    def _replace_as_hell(match: re.Match) -> str:
+        src = match.group(0)
+        return "Very much" if src[0].isupper() else "very much"
+
+    stage1 = SLASH_SLANG_REGEX.sub(_replace_slash, stage0)
+    stage1 = CUTE_AS_HELL_REGEX.sub(_replace_cute_as_hell, stage1)
+    stage1 = AS_HELL_REGEX.sub(_replace_as_hell, stage1)
 
     def _replace_word(match: re.Match) -> str:
         word = match.group(0)
@@ -141,7 +166,7 @@ def preprocess_english_text(text: str) -> str:
 # ==============================================================================
 class NativeCT2Translator:
     """
-    Прямой легковесный движок CTranslate2 + SentencePiece (int8, inter_threads=4).
+    Прямой легковесный движок CTranslate2 + SentencePiece (int8).
     Не импортирует torch, argostranslate, stanza или spacy!
     Ищет модель в ./model_en_ru рядом с .exe или автоматически распаковывает её
     из существующего кэша ~/.local/share/argos-translate/packages (.argosmodel zip).
@@ -151,6 +176,8 @@ class NativeCT2Translator:
         self.translator: Optional["ctranslate2.Translator"] = None
         self.sp_processor: Optional["spm.SentencePieceProcessor"] = None
         self.model_dir: Optional[str] = None
+        self._ct2_dir: Optional[str] = None
+        self.cpu_power_mode: str = DEFAULT_CPU_POWER_MODE
         self.ready: bool = False
         self._translate_lock = threading.Lock()
 
@@ -225,7 +252,9 @@ class NativeCT2Translator:
                 return root
         return None
 
-    def initialize(self) -> None:
+    def initialize(self, cpu_power_mode: Optional[str] = None) -> None:
+        if cpu_power_mode in CPU_POWER_PROFILES:
+            self.cpu_power_mode = cpu_power_mode
         if not HAS_NATIVE_CT2:
             log_event("ctranslate2 / sentencepiece не установлены -> активен быстрый словарь GAME_UI_DICT", "WARN")
             return
@@ -243,11 +272,16 @@ class NativeCT2Translator:
             if not os.path.isfile(sp_path):
                 sp_path = os.path.join(ct2_dir, "sentencepiece.model")
 
+            inter_threads, intra_threads, _ = CPU_POWER_PROFILES.get(
+                self.cpu_power_mode, CPU_POWER_PROFILES[DEFAULT_CPU_POWER_MODE]
+            )
+            self._ct2_dir = ct2_dir
             self.translator = ctranslate2.Translator(
                 ct2_dir,
                 device="cpu",
                 compute_type="int8",
-                inter_threads=4,
+                inter_threads=inter_threads,
+                intra_threads=intra_threads,
             )
             # SentencePiece открывает путь через узкий API и не видит кириллицу вроде «ПетПроекты».
             # Файл читает Python, в токенизатор отдаются уже байты модели.
@@ -261,9 +295,34 @@ class NativeCT2Translator:
 
             # Прогрев модели в ОЗУ
             _ = self.translate_batch(["System Ready"])
-            log_event(f"NativeCT2Translator v{APP_VERSION} (int8, без PyTorch) загружен из {found_dir}")
+            log_event(
+                f"NativeCT2Translator v{APP_VERSION} (int8, cpu={self.cpu_power_mode}, "
+                f"inter={inter_threads}, intra={intra_threads}) загружен из {found_dir}"
+            )
         except Exception as exc:
             log_event(f"Предупреждение инициализации NativeCT2Translator: {exc}", "WARN")
+
+    def set_cpu_power_mode(self, mode: str) -> None:
+        """Переинициализирует потоки CTranslate2 при смене мощности CPU в настройках."""
+        normalized = mode if mode in CPU_POWER_PROFILES else DEFAULT_CPU_POWER_MODE
+        self.cpu_power_mode = normalized
+        if not HAS_NATIVE_CT2 or not self.ready or not self._ct2_dir:
+            return
+        inter_threads, intra_threads, _ = CPU_POWER_PROFILES[normalized]
+        with self._translate_lock:
+            try:
+                self.translator = ctranslate2.Translator(
+                    self._ct2_dir,
+                    device="cpu",
+                    compute_type="int8",
+                    inter_threads=inter_threads,
+                    intra_threads=intra_threads,
+                )
+                log_event(
+                    f"Потоки NativeCT2 обновлены (cpu={normalized}: inter={inter_threads}, intra={intra_threads})"
+                )
+            except Exception as exc:
+                log_event(f"Не удалось переключить потоки NativeCT2: {exc}", "WARN")
 
     def word_score(self, word: str) -> Optional[float]:
         """Лог-вероятность слова на букву по словарю SentencePiece (он общий для EN и RU).
@@ -282,8 +341,8 @@ class NativeCT2Translator:
     def translate_batch(self, texts: List[str]) -> List[Tuple[str, bool]]:
         """
         Пункт 1.3 и 4.1 ТЗ v3.0 + v3.6:
-        1. Очищает буллиты и спецсимволы по краям (•·|—*<>[]).
-        2. Мгновенно (0 мс) проверяет игровой словарь GAME_UI_DICT.
+        1. Очищает буллиты, спецсимволы по краям и опечатки OCR (normalize_ocr_confusables).
+        2. Мгновенно (0 мс) проверяет игровой словарь lookup_game_ui_dict и шаблоны translate_ui_pattern.
         3. Если строка в КАПСЕ (text.isupper()), переводит её в .capitalize() перед подачей в CTranslate2,
            а результат возвращает в .upper() для коротких заголовков (<= 3 слов).
         4. Нормализует игровой сленг и пропущенные апострофы через preprocess_english_text.
@@ -305,19 +364,23 @@ class NativeCT2Translator:
         ct2_restore_upper: List[bool] = []
 
         for i, raw_txt in enumerate(texts):
-            cleaned = raw_txt.strip(" •·|—*<>[]\t\r\n").strip()
+            cleaned = normalize_ocr_confusables(raw_txt.strip(" •·|—*<>[]\t\r\n").strip())
             if not cleaned:
                 results[i] = (raw_txt, True)
                 continue
 
             word_count = len(cleaned.split())
             is_upper_source = cleaned.isupper() and any(ch.isalpha() for ch in cleaned)
-            low = cleaned.lower()
 
-            # 1. Мгновенный поиск во встроенном игровом словаре GAME_UI_DICT (0 мс)
-            if low in GAME_UI_DICT:
-                dict_val = GAME_UI_DICT[low]
+            # 1. Мгновенный поиск во встроенном игровом словаре GAME_UI_DICT (с нечетким сопоставлением)
+            dict_val = lookup_game_ui_dict(cleaned)
+            if dict_val is not None:
                 results[i] = (dict_val.upper() if (is_upper_source and word_count <= 3) else dict_val, True)
+                continue
+
+            pattern_val = translate_ui_pattern(cleaned)
+            if pattern_val is not None:
+                results[i] = (pattern_val, True)
                 continue
 
             # 2. Нормализация КАПСА для нейросети CTranslate2

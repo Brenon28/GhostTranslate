@@ -32,6 +32,8 @@ except ImportError:
     HAS_RAPIDOCR = False
 
 from .config import (
+    CPU_POWER_PROFILES,
+    DEFAULT_CPU_POWER_MODE,
     MAX_BLOCKS_PER_FRAME,
     MIN_OCR_SCORE,
     RAPIDOCR_MAX_SIDE,
@@ -44,10 +46,15 @@ from .config import (
     WINOCR_UPSCALE,
 )
 from .diagnostics import log_event, record_benchmark
-from .game_dict import GAME_UI_DICT, translate_ui_pattern
+from .game_dict import GAME_UI_DICT, lookup_game_ui_dict, translate_ui_pattern
 from .models import OverlayBlock, RawWordBox
 from .ocr.imaging import compute_small_gray_numpy, downscale_bgr_via_qimage, sample_word_background_and_fg
-from .ocr.layout import drop_words_over_russian, is_valid_english_box, merge_ocr_boxes_into_paragraphs
+from .ocr.layout import (
+    drop_words_over_russian,
+    is_valid_english_box,
+    merge_ocr_boxes_into_paragraphs,
+    normalize_ocr_confusables,
+)
 from .ocr.rapid_layout import rapidocr_to_word_boxes
 from .screens import open_mss
 
@@ -82,21 +89,36 @@ class LazyRapidOCR:
     """RapidOCR грузит две ONNX-модели около секунды. При старте с WinOCR он не нужен,
     поэтому создаётся в потоке распознавания при первом кадре или в фоне при переключении."""
 
-    def __init__(self):
+    def __init__(self, cpu_power_mode: str = DEFAULT_CPU_POWER_MODE):
         self._engine = None
         self._lock = threading.Lock()
+        profile = CPU_POWER_PROFILES.get(cpu_power_mode)
+        self._threads = profile[2] if profile else RAPIDOCR_THREADS
+
+    def set_threads(self, threads: int) -> None:
+        new_threads = max(1, int(threads))
+        with self._lock:
+            if self._threads == new_threads:
+                return
+            self._threads = new_threads
+            self._engine = None
+        log_event(f"Потоки RapidOCR переключены на: {new_threads}")
+
+    def set_cpu_power_mode(self, mode: str) -> None:
+        profile = CPU_POWER_PROFILES.get(mode, CPU_POWER_PROFILES[DEFAULT_CPU_POWER_MODE])
+        self.set_threads(profile[2])
 
     def get(self):
         with self._lock:
             if self._engine is None:
-                options = {"intra_op_num_threads": RAPIDOCR_THREADS}
+                options = {"intra_op_num_threads": self._threads}
                 if os.path.isfile(RAPIDOCR_REC_MODEL_PATH):
                     options["rec_model_path"] = RAPIDOCR_REC_MODEL_PATH
                 else:
                     log_event(f"Нет {RAPIDOCR_REC_MODEL_PATH} -> китайская модель распознавания RapidOCR", "WARN")
                 t0 = time.perf_counter()
                 self._engine = RapidOCR(**options)
-                log_event(f"RapidOCR загружен за {time.perf_counter() - t0:.2f} с ({RAPIDOCR_THREADS} потоков)")
+                log_event(f"RapidOCR загружен за {time.perf_counter() - t0:.2f} с ({self._threads} потоков)")
             return self._engine
 
     def preload(self):
@@ -125,6 +147,7 @@ class OcrWorkerThread(QThread):
         dpi_scale: float = 1.0,
         offset_x: int = 0,
         offset_y: int = 0,
+        scan_mode: str = "smart_grid",
     ):
         super().__init__()
         self.ocr_engine = ocr_engine
@@ -135,6 +158,7 @@ class OcrWorkerThread(QThread):
         self.dpi_scale = max(1.0, dpi_scale)
         self.offset_x = offset_x
         self.offset_y = offset_y
+        self.scan_mode = scan_mode
         self.applied_scale = 1.0
         self.cyrillic_dropped = 0
 
@@ -160,6 +184,8 @@ class OcrWorkerThread(QThread):
     def _winocr_image(self) -> Tuple["Image.Image", float]:
         img_rgb = self.img_bgra[:, :, :3][:, :, ::-1]
         pil_img = Image.fromarray(img_rgb)
+        if self.scan_mode == "turbo_chat":
+            return pil_img, 1.0
         scale = winocr_upscale_for(pil_img.width, pil_img.height)
         if scale > 1.0:
             pil_img = pil_img.resize(
@@ -187,8 +213,10 @@ class OcrWorkerThread(QThread):
         if scale > 1.0:
             self.applied_scale = scale
 
+        turbo = self.scan_mode == "turbo_chat"
+
         async def _recognize():
-            if not HAS_RU_WINOCR:
+            if turbo or not HAS_RU_WINOCR:
                 return await winocr.recognize_pil(pil_img, "en"), None
             # Два распознавателя параллельно: около +20 мс к одному английскому.
             return await asyncio.gather(winocr.recognize_pil(pil_img, "en"), winocr.recognize_pil(pil_img, "ru"))
@@ -263,6 +291,7 @@ class OcrWorkerThread(QThread):
         valid_paragraphs: List[RawWordBox] = []
         skipped_noise_or_ru = 0
         for pb in paragraph_boxes:
+            pb.text = normalize_ocr_confusables(pb.text)
             if not is_valid_english_box(pb.text):
                 skipped_noise_or_ru += 1
                 continue
@@ -292,13 +321,17 @@ class OcrWorkerThread(QThread):
             ly = self.offset_y + int(round(mb.y1 / self.dpi_scale)) - (lh - raw_h) // 2
 
             # Проверяем LRU-кэш или мгновенный словарь GAME_UI_DICT (0 мс)
-            cleaned_key = mb.text.strip(" •·|—*<>[]").strip()
-            low_key = cleaned_key.lower()
+            cleaned_key = normalize_ocr_confusables(mb.text.strip(" •·|—*<>[]").strip())
             cached = self.lru_cache.get(mb.text)
-            if cached is None and low_key in GAME_UI_DICT:
-                dict_val = GAME_UI_DICT[low_key]
-                cached = dict_val.upper() if (cleaned_key.isupper() and len(cleaned_key.split()) <= 3) else dict_val
-                self.lru_cache.put(mb.text, cached)
+            if cached is None:
+                dict_val = lookup_game_ui_dict(cleaned_key)
+                if dict_val is not None:
+                    cached = (
+                        dict_val.upper()
+                        if (cleaned_key.isupper() and len(cleaned_key.split()) <= 3)
+                        else dict_val
+                    )
+                    self.lru_cache.put(mb.text, cached)
             if cached is None:
                 cached = translate_ui_pattern(cleaned_key)
 
@@ -380,8 +413,12 @@ class NativeCT2TranslationWorker(QThread):
 class ModelLoaderThread(QThread):
     loaded = pyqtSignal(bool)
 
+    def __init__(self, cpu_power_mode: str = DEFAULT_CPU_POWER_MODE):
+        super().__init__()
+        self.cpu_power_mode = cpu_power_mode
+
     def run(self):
-        NATIVE_CT2.initialize()
+        NATIVE_CT2.initialize(self.cpu_power_mode)
         self.loaded.emit(NATIVE_CT2.ready)
 
 

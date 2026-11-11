@@ -2,6 +2,8 @@ import difflib
 import re
 from typing import Dict, Optional, Tuple
 
+from .ocr.layout import normalize_ocr_confusables
+
 
 # ==============================================================================
 # ПУНКТ 1.3 ТЗ v3.0: ВСТРОЕННЫЙ СЛОВАРЬ ИГРОВЫХ МЕНЮ И ТЕРМИНОВ (160+ СЛОВ, 0 МС)
@@ -283,11 +285,16 @@ GAME_UI_DICT: Dict[str, str] = {
 }
 
 
+def _is_embedded_word(left: str, right: str) -> bool:
+    """«orange» содержит «range»: это другое слово, а не опечатка OCR."""
+    return left != right and (left in right or right in left)
+
+
 def lookup_game_ui_dict(text: str) -> Optional[str]:
-    """Мгновенный поиск по GAME_UI_DICT: точный, без окончания -s/-es и нечеткий (cutoff=0.82)."""
+    """Мгновенный поиск по GAME_UI_DICT: точный, без окончания -s/-es и нечеткий для опечаток."""
     if not text:
         return None
-    low = " ".join(text.strip().lower().split())
+    low = " ".join(normalize_ocr_confusables(text).strip().lower().split())
     if not low:
         return None
 
@@ -300,18 +307,16 @@ def lookup_game_ui_dict(text: str) -> Optional[str]:
     if len(words) == 1 and len(low) >= 4:
         if low.endswith("es") and low[:-2] in GAME_UI_DICT:
             return GAME_UI_DICT[low[:-2]]
-        if low.endswith("s") and low[:-1] in GAME_UI_DICT:
+        if low.endswith("s") and not low.endswith("ss") and low[:-1] in GAME_UI_DICT:
             return GAME_UI_DICT[low[:-1]]
 
-    # 3. Нечеткий поиск для строк из 1-2 слов длиной >= 5 символов (опечатки OCR в 1-2 буквах)
-    if 1 <= len(words) <= 2 and len(low) >= 5:
-        matches = difflib.get_close_matches(low, GAME_UI_DICT.keys(), n=3, cutoff=0.82)
-        if matches:
-            if low.endswith("s"):
-                for cand in matches:
-                    if cand.endswith("s"):
-                        return GAME_UI_DICT[cand]
-            return GAME_UI_DICT[matches[0]]
+    # 3. Опечатка в 1-2 буквах. Слово, внутрь которого входит словарное, не берём.
+    if 1 <= len(words) <= 2 and len(low) >= 6:
+        matches = difflib.get_close_matches(low, GAME_UI_DICT.keys(), n=3, cutoff=0.9)
+        for cand in matches:
+            if abs(len(cand) - len(low)) > 2 or _is_embedded_word(low, cand):
+                continue
+            return GAME_UI_DICT[cand]
     return None
 
 

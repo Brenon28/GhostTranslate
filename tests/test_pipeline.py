@@ -68,6 +68,7 @@ class TranslatorFallbackTests(unittest.TestCase):
         self.assertEqual(translate_ui_pattern("Barricade x1"), "Баррикада x1")
         self.assertEqual(lookup_game_ui_dict("llpgrades"), "Улучшения")
         self.assertEqual(lookup_game_ui_dict("Can't Attack"), "Не может атаковать")
+        self.assertIsNone(lookup_game_ui_dict("orange"))
 
     def test_quick_chat_phrases_from_game_dict(self):
         translator = NativeCT2Translator()

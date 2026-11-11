@@ -235,6 +235,8 @@ class EnglishBoxFilterTests(unittest.TestCase):
             "Helper ГОТ",
         ):
             self.assertFalse(is_valid_english_box(header), header)
+        for phrase in ("round starts 20:51", "final score 12:00", "level 12:00"):
+            self.assertTrue(is_valid_english_box(phrase), phrase)
 
     def test_number_with_unit_is_not_ocr_garbage(self):
         for text in ("3mo", "24h", "1.2k", "x1", "x10"):

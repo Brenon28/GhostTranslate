@@ -59,8 +59,8 @@ def _is_bare_list_label(words: List[RawWordBox]) -> bool:
 
 PSEUDO_ICON_PREFIX_REGEX = re.compile(r"^[@©®¤§°•·]+\s*(?=\d)")
 CONFUSABLE_U_PREFIX_REGEX = re.compile(
-    r"\b(?:(?:Ll|II|lI)(?=[bcdfghjklmnpqrstvwxzBCDFGHJKLMNPQRSTVWXZ][a-zA-Z]{2,})"
-    r"|Il(?=[bcdfghjkmnpqrstvwxzBCDFGHJKMNPQRSTVWXZ][a-zA-Z]{2,}))"
+    r"\b(?:(?:Ll|ll|II|lI)(?=[bcdfghjklmnpqrstvwxzBCDFGHJKLMNPQRSTVWXZ][a-zA-Z]{2,})"
+    r"|(?:Il|il)(?=[bcdfghjkmnpqrstvwxzBCDFGHJKMNPQRSTVWXZ][a-zA-Z]{2,}))"
 )
 TRAILING_TIMECODE_REGEX = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\s*$")
 BOT_TAG_LINE_REGEX = re.compile(
@@ -93,12 +93,24 @@ def is_chat_metadata_line(text: str) -> bool:
     if BOT_TAG_LINE_REGEX.match(stripped) or DISCORD_MENTION_ONLY_REGEX.match(stripped):
         return True
     time_match = TRAILING_TIMECODE_REGEX.search(stripped)
-    if time_match:
-        prefix = stripped[: time_match.start()].strip()
-        tokens = prefix.split()
-        if 1 <= len(tokens) <= 4 and all(len(tok) <= 20 for tok in tokens):
-            return True
+    if time_match and _prefix_looks_like_chat_header(stripped[: time_match.start()].strip()):
+        return True
     return False
+
+
+def _prefix_looks_like_chat_header(prefix: str) -> bool:
+    """Время в конце — шапка чата, только если перед ним ник или тег, а не фраза.
+
+    «17 [d1s] k1r1to» и «Serega [D1S]» отбрасываются.
+    «round starts» и «final score» остаются.
+    """
+    tokens = prefix.split()
+    if not tokens or len(tokens) > 4 or any(len(tok) > 20 for tok in tokens):
+        return False
+    return any(
+        (tok.startswith("[") and tok.endswith("]")) or any(ch.isdigit() for ch in tok)
+        for tok in tokens
+    )
 
 
 def is_valid_english_box(text: str) -> bool:
@@ -108,8 +120,9 @@ def is_valid_english_box(text: str) -> bool:
         return False
     if all(is_identifier_token(token) for token in text.split()):
         return False
-    # «Ресурс: Wood» проверяется по значению; абзац, кончающийся двоеточием, — целиком.
-    after_colon = text.split(":", 1)[-1].strip() if ":" in text else ""
+    # «Ресурс: Wood» проверяется по значению. Двоеточие внутри «20:51» — это время, не подпись.
+    clock = re.search(r"\d:\d", text)
+    after_colon = text.split(":", 1)[-1].strip() if ":" in text and clock is None else ""
     payload = after_colon if len(after_colon) >= 2 else text.strip()
     if len(payload) < 2:
         return False

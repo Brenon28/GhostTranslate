@@ -47,7 +47,7 @@ from .screens import (
     crop_to_region,
     mask_native_rects,
     native_capture_region,
-    open_mss,
+    ThreadLocalMss,
     screen_at_native_point,
     screen_native_rect,
 )
@@ -123,7 +123,7 @@ class GhostTranslateController(QWidget):
         self._check_seq_on_complete = False
         self._retranslate_when_idle = False
 
-        self.sct = open_mss()
+        self.sct = ThreadLocalMss()
         self._last_grab_warn_ts: float = 0.0
         # Кадр последнего запуска конвейера: из него вырезается эталон для watchdog.
         self._frame_bgra: Optional[np.ndarray] = None
@@ -615,10 +615,7 @@ class GhostTranslateController(QWidget):
                     f"Экран временно недоступен (Secure Desktop / UAC: {exc}), пропуск кадра",
                     "WARN",
                 )
-            try:
-                self.sct = open_mss()
-            except Exception:
-                pass
+            self.sct.close()
             return None
 
     # --------------------------------------------------------------------------

@@ -48,7 +48,12 @@ from .config import (
 from .diagnostics import log_event, record_benchmark
 from .game_dict import GAME_UI_DICT, lookup_game_ui_dict, translate_ui_pattern
 from .models import OverlayBlock, RawWordBox
-from .ocr.imaging import compute_small_gray_numpy, downscale_bgr_via_qimage, sample_word_background_and_fg
+from .ocr.imaging import (
+    clahe_light_bgra,
+    compute_small_gray_numpy,
+    downscale_bgr_via_qimage,
+    sample_word_background_and_fg,
+)
 from .ocr.layout import (
     drop_words_over_russian,
     is_valid_english_box,
@@ -83,6 +88,46 @@ def _winocr_max_side() -> int:
 
 
 WINOCR_MAX_SIDE = _winocr_max_side() if OcrEngine is not None else 10000
+_WINOCR_ENGINES = {}
+
+
+def _winocr_engine(lang: str):
+    engine = _WINOCR_ENGINES.get(lang)
+    if engine is None:
+        from winrt.windows.globalization import Language
+        from winrt.windows.media.ocr import OcrEngine as Engine
+
+        engine = Engine.try_create_from_language(Language(lang))
+        _WINOCR_ENGINES[lang] = engine
+    return engine
+
+
+async def _recognize_bgra(bgra: np.ndarray, lang: str):
+    """Сплошной кадр BGRA уходит в SoftwareBitmap без картинки PIL."""
+    from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
+    from winrt.windows.storage.streams import DataWriter
+
+    frame = np.ascontiguousarray(bgra)
+    height, width = frame.shape[:2]
+    writer = DataWriter()
+    writer.write_bytes(frame.tobytes())
+    bitmap = SoftwareBitmap.create_copy_from_buffer(
+        writer.detach_buffer(), BitmapPixelFormat.BGRA8, width, height
+    )
+    try:
+        return await _winocr_engine(lang).recognize_async(bitmap)
+    finally:
+        close = getattr(bitmap, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def _frame_has_ink(img_bgra: np.ndarray) -> bool:
+    gray = img_bgra[:, :, :3].astype(np.float32)
+    return float(np.std(gray)) > 12.0
 
 
 class LazyRapidOCR:
@@ -181,45 +226,43 @@ class OcrWorkerThread(QThread):
                 lines.append(boxes)
         return lines
 
-    def _winocr_image(self) -> Tuple["Image.Image", float]:
-        img_rgb = self.img_bgra[:, :, :3][:, :, ::-1]
-        pil_img = Image.fromarray(img_rgb)
+    def _scaled_bgra(self) -> Tuple[np.ndarray, float]:
+        frame = np.ascontiguousarray(self.img_bgra)
         if self.scan_mode == "turbo_chat":
-            return pil_img, 1.0
-        scale = winocr_upscale_for(pil_img.width, pil_img.height)
-        if scale > 1.0:
-            pil_img = pil_img.resize(
-                (int(round(pil_img.width * scale)), int(round(pil_img.height * scale))),
-                Image.Resampling.BICUBIC,
-            )
-        return pil_img, scale
+            return frame, 1.0
+        scale = winocr_upscale_for(frame.shape[1], frame.shape[0])
+        if scale <= 1.0:
+            return frame, 1.0
+        import cv2
+
+        height, width = frame.shape[:2]
+        scaled = cv2.resize(
+            frame,
+            (int(round(width * scale)), int(round(height * scale))),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        self.applied_scale = scale
+        return np.ascontiguousarray(scaled), scale
+
+    def _boxes_from_bgra(self, bgra: np.ndarray, scale: float, lang: str) -> List[List[RawWordBox]]:
+        result = asyncio.run(_recognize_bgra(bgra, lang))
+        return self._winocr_lines(result, scale)
 
     def _russian_lines(self) -> List[List[RawWordBox]]:
         """Русский WinOCR по тому же кадру. RapidOCR с английской моделью читает русские
         надписи игры латиницей («noknAaet penAosyio rpynny»), и по этим строкам их видно."""
-        pil_img, scale = self._winocr_image()
-
-        async def _recognize():
-            return await winocr.recognize_pil(pil_img, "ru")
-
-        return self._winocr_lines(asyncio.run(_recognize()), scale)
+        bgra, scale = self._scaled_bgra()
+        return self._boxes_from_bgra(bgra, scale, "ru")
 
     def _run_winocr(self) -> List[RawWordBox]:
-        """
-        Пункт 1.1 ТЗ v3.0: В WinOCR обязательно извлекаем именно отдельные слова (for word in line.words),
-        а не целую строку line целиком!
-        """
-        pil_img, scale = self._winocr_image()
-        if scale > 1.0:
-            self.applied_scale = scale
-
+        """Слова WinOCR с того же кадра. Пустой результат на живой картинке повторяется один раз после CLAHE."""
+        bgra, scale = self._scaled_bgra()
         turbo = self.scan_mode == "turbo_chat"
 
         async def _recognize():
             if turbo or not HAS_RU_WINOCR:
-                return await winocr.recognize_pil(pil_img, "en"), None
-            # Два распознавателя параллельно: около +20 мс к одному английскому.
-            return await asyncio.gather(winocr.recognize_pil(pil_img, "en"), winocr.recognize_pil(pil_img, "ru"))
+                return await _recognize_bgra(bgra, "en"), None
+            return await asyncio.gather(_recognize_bgra(bgra, "en"), _recognize_bgra(bgra, "ru"))
 
         en_res, ru_res = asyncio.run(_recognize())
         raw_boxes = [word for line in self._winocr_lines(en_res, scale) for word in line]
@@ -227,6 +270,21 @@ class OcrWorkerThread(QThread):
             raw_boxes, self.cyrillic_dropped = drop_words_over_russian(
                 raw_boxes, self._winocr_lines(ru_res, scale), NATIVE_CT2.word_score
             )
+        if turbo or len(raw_boxes) >= 2 or not _frame_has_ink(self.img_bgra):
+            return raw_boxes
+        try:
+            enhanced = clahe_light_bgra(bgra)
+        except Exception as exc:
+            log_event(f"Запасной контраст WinOCR пропущен: {exc}", "WARN")
+            return raw_boxes
+        en_res = asyncio.run(_recognize_bgra(enhanced, "en"))
+        raw_boxes = [word for line in self._winocr_lines(en_res, scale) for word in line]
+        if HAS_RU_WINOCR and not turbo and raw_boxes:
+            ru_lines = self._boxes_from_bgra(enhanced, scale, "ru")
+            raw_boxes, self.cyrillic_dropped = drop_words_over_russian(
+                raw_boxes, ru_lines, NATIVE_CT2.word_score
+            )
+        log_event(f"WinOCR повторён после контраста, слов={len(raw_boxes)}")
         return raw_boxes
 
     def _run_rapidocr(self) -> List[RawWordBox]:

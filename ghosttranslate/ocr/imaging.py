@@ -85,6 +85,20 @@ def downscale_bgr_via_qimage(img_bgra: np.ndarray, scale: float) -> np.ndarray:
         return np.ascontiguousarray(img_bgra[np.ix_(row_idx, col_idx)][:, :, :3])
 
 
+def clahe_light_bgra(img_bgra: np.ndarray) -> np.ndarray:
+    """Один проход контраста: тёмный текст на светлом фоне для повторного WinOCR.
+
+    OpenCV уже стоит из-за RapidOCR. Кадр не увеличивается, рамки слов остаются на месте.
+    """
+    import cv2
+
+    gray = cv2.cvtColor(np.ascontiguousarray(img_bgra[:, :, :3]), cv2.COLOR_BGR2GRAY)
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    if float(np.median(enhanced)) < 128.0:
+        enhanced = cv2.bitwise_not(enhanced)
+    return np.ascontiguousarray(cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGRA))
+
+
 def sample_word_background_and_fg(
     img_bgra: np.ndarray, x1: int, y1: int, x2: int, y2: int
 ) -> Tuple[QColor, QColor, QColor]:
